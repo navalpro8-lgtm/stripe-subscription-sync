@@ -22,5 +22,16 @@ The module never imports this folder, and you do not need it to use the module.
 
 ## What was checked
 
-- **Checked:** `npm run typecheck` and `npm run build` pass. Neither needs Stripe or Supabase credentials.
-- **Not checked:** steps 2–6 have not been run against a real Supabase project or Stripe sandbox for this repository.
+- **Build:** `npm run typecheck` and `npm run build` pass. Neither needs Stripe or Supabase credentials.
+- **Sandbox run:** on 2026-11-23 this app ran against a Stripe sandbox and a new Supabase project, using [scripts/e2e-sandbox.mjs](scripts/e2e-sandbox.mjs). The root README's "Manual end-to-end run" lists exactly what was done and what it showed.
+- **Not checked:** step 6. The customer was linked by hand in that run, not by a real Checkout.
+
+## Sandbox test harness
+
+[scripts/e2e-sandbox.mjs](scripts/e2e-sandbox.mjs) starts `next start` and `stripe listen`, and keeps your keys inside its own process. It refuses any Stripe key that is not `sk_test_`. It also serves a control API on 127.0.0.1:3999 for:
+
+- making Stripe API calls;
+- re-delivering an event, signed;
+- reading a user's entitlement.
+
+Logs go to `scripts/.e2e/` (gitignored); the Stripe CLI's log there includes its webhook signing secret. Run `npm run build` first, then `node scripts/e2e-sandbox.mjs`.

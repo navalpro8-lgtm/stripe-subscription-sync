@@ -6,3 +6,4 @@ dist/
 examples/*/.next/
 examples/*/next-env.d.ts
 *.tsbuildinfo
+examples/*/scripts/.e2e/

@@ -29,5 +29,5 @@ Creating Checkout Sessions, setting `client_reference_id`, customer portals and 
 - **Once tombstoned, a row never changes again**, including later field corrections Stripe might make to a canceled subscription.
 - **Live and test mode share the tables.** Use separate databases (or schemas) per Stripe mode.
 - **One Stripe account.** Stripe Connect and multiple accounts are not handled.
-- **Stripe API versions:** tested shapes are those of 2025-03-31.basil and 2025-02-24.acacia, using synthetic payloads only (see [fixtures/README.md](fixtures/README.md)). Later versions were not checked.
-- **Supabase** was not tested on a real project; see the compatibility table in the README.
+- **Stripe API versions:** the automated tests use synthetic 2025-03-31.basil and 2025-02-24.acacia shapes (see [fixtures/README.md](fixtures/README.md)). One manual sandbox run also passed with 2026-09-30.endive events and 2026-10-28.endive subscriptions. Other versions were not checked.
+- **Supabase** has been checked on one real project, manually. Checkout-driven linking and Data API access with a real user JWT were not exercised; see the README's compatibility table.

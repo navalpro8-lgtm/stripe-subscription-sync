@@ -134,9 +134,32 @@ To use your own server instead, set `DATABASE_URL`, for example with `docker com
 
 | Status | What |
 |---|---|
-| **Tested** (all checks run locally on Windows 11 on 2026-11-23; CI has not run yet) | Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3; example app typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0 |
+| **Tested** (all run locally on Windows 11 on 2026-11-23; CI has not run yet) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **One manual end-to-end run** (see [below](#manual-end-to-end-run)) |
 | **Expected to work** (configured, not yet run) | Node 22.12+ and 24 (the CI matrix); Postgres 17 as a service container in GitHub Actions; `docker-compose.yml` |
-| **Unverified** | A real Supabase project (RLS tested only on the role stand-in; supabase-js `rpc` only through a stub with the same contract); a live Stripe sandbox; real Stripe payloads (all fixtures are synthetic); Stripe API versions other than the 2025-03-31.basil and 2025-02-24.acacia shapes; Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
+| **Unverified** | **Checkout:** `checkout.session.completed` from a real Checkout; in the manual run the customer link was inserted by hand. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** concurrent or racing deliveries on real infrastructure, which only the automated suite forces. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
+
+### Manual end-to-end run
+
+On 2026-11-23 the example app ran against a Stripe sandbox and a new Supabase project (Postgres 17.12, `sql/schema.sql` and `sql/supabase.sql` applied). Stripe CLI 1.55.14 forwarded the events, and the harness was [examples/nextjs-supabase/scripts/e2e-sandbox.mjs](examples/nextjs-supabase/scripts/e2e-sandbox.mjs).
+
+**API versions:** events arrived at Stripe API 2026-09-30.endive, and subscriptions were retrieved at 2026-10-28.endive, the version stripe-node 23.1.0 pins.
+
+The run went through these steps:
+
+1. **Created before linking:** a 7-day trial subscription was created before its customer was linked. `customer.subscription.created` and `invoice.paid` failed (500, "No user linked to customer…") and no row was written.
+2. **Linked and retried:** the customer was linked to a test user, and both events were re-delivered. Both succeeded, and the row matched Stripe: `trialing`, Pro price, 7-day period. Entitlement was `active`; an unrelated user's was `none`.
+3. **Duplicate:** re-delivering the same event returned 200 `duplicate`, and the revision was unchanged.
+4. **Plan changes:** a downgrade to the Basic price, then `cancel_at_period_end`, were both reflected. Entitlement stayed `active`.
+5. **Cancellation:** cancelling the subscription gave `status = canceled` and set `tombstoned_at`. Entitlement became `none`.
+6. **Permissions:** checked in SQL with Supabase's real roles.
+   - authenticated, as the owner: sees 1 row.
+   - authenticated, as another user: sees 0 rows.
+   - anon reading the table: permission denied.
+   - authenticated updating its own row: permission denied.
+   - authenticated executing `claim_event`: permission denied.
+   - The grants were as written in `supabase.sql`.
+
+**Advisor findings:** Supabase's security advisor flagged two things. One is an informational note that `stripe_events` and `stripe_customer_links` have RLS but no policies, which is intended. The other is a warning about a `public.rls_auto_enable()` function that came with the new project, not from this repo.
 
 ## Size
 
