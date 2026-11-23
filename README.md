@@ -155,8 +155,9 @@ These numbers say nothing about real Stripe latency, Supabase, or a deployed ser
 
 | Status | What |
 |---|---|
-| **Tested** (all run locally on Windows 11 on 2026-11-23; CI has not run yet) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **Manual end-to-end runs** (see [below](#manual-end-to-end-run)). **The local load test** above |
-| **Expected to work** (configured, not yet run) | Node 22.12+ and 24 (the CI matrix); Postgres 17 as a service container in GitHub Actions; `docker-compose.yml` |
+| **Tested in CI** (GitHub Actions, ubuntu-latest, from 2026-11-23) | Lint, typecheck, the automated suite, build, and the example app's typecheck and `next build`, on **Node 22 and Node 24**, against a **Postgres 17** service container |
+| **Tested locally** (Windows 11, 2026-11-23) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **Manual end-to-end runs** (see [below](#manual-end-to-end-run)). **The local load test** above |
+| **Expected to work** (configured, not yet run) | `docker-compose.yml` |
 | **Unverified** | **Checkout in a browser:** a person paying on Stripe's hosted page. The third manual run completed Checkout through Stripe's test-mode API with the test card token instead. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** heavy concurrent or racing deliveries on real infrastructure; the automated suite forces them locally, the load test runs them locally, and the real run saw only pairs of simultaneous events. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
 
 ### Manual end-to-end run
