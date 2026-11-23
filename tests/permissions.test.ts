@@ -22,8 +22,8 @@ async function as<T>(role: 'anon' | 'authenticated' | 'service_role', userId: st
 const insertSub = (id: string, userId: string) =>
   db.query(
     `insert into public.stripe_subscriptions (subscription_id, user_id, customer_id, status, price_id, product_id,
-       current_period_start, current_period_end, cancel_at_period_end, revision, read_seq, last_event_id)
-     values ($1, $2, 'cus_' || $1, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', false, 1, 1, 'evt_setup')`,
+       current_period_start, current_period_end, items, cancel_at_period_end, revision, read_seq, last_event_id)
+     values ($1, $2, 'cus_' || $1, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', '[{"id":"si_1","price_id":"price_1","product_id":"prod_1"}]', false, 1, 1, 'evt_setup')`,
     [id, userId],
   );
 

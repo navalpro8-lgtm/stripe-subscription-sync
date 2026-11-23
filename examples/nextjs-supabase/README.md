@@ -24,7 +24,8 @@ The module never imports this folder, and you do not need it to use the module.
 
 - **Build:** `npm run typecheck` and `npm run build` pass. Neither needs Stripe or Supabase credentials.
 - **Sandbox run:** on 2026-11-23 this app ran against a Stripe sandbox and a new Supabase project, using [scripts/e2e-sandbox.mjs](scripts/e2e-sandbox.mjs). The root README's "Manual end-to-end run" lists exactly what was done and what it showed.
-- **Not checked:** step 6. The customer was linked by hand in that run, not by a real Checkout.
+- **Checkout:** a later run completed a subscription-mode Checkout through Stripe's test-mode API, and the customer was linked from `client_reference_id`.
+- **Not checked:** a person paying on Stripe's hosted Checkout page in a browser.
 
 ## Sandbox test harness
 

@@ -23,4 +23,6 @@ This is a **reference implementation**. It has not been audited, and it is **not
 
 ## Reporting
 
-This repository has no security contact. If you find a flaw in the design, open an issue describing it without exploit details.
+Please report a vulnerability privately, not in a public issue. Use GitHub's private vulnerability reporting: the repository's **Security** tab, then **Report a vulnerability**. Include what you found, how to reproduce it, and which files are involved. Maintainers: enable that setting under **Settings → Code security** once the repository is public.
+
+There is no bug bounty, and no response-time promise.

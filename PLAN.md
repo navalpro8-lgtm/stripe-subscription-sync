@@ -17,7 +17,12 @@ Status: **implemented**. The plan was approved with the defaults in §10, and `e
   - A version that also returned `superseded` from the write function was removed: a mutation check showed it was redundant with the pre-read check on retry.
   - 3 new tests.
   - After the change the same load test had 0 failures.
-- **Size:** `src/` is 674 lines; `process-event.ts` is 234, below the 250–350 estimate.
+- **Every item stored (replaces §10.6).**
+  - Rows have an `items` jsonb array of `{id, price_id, product_id, quantity, current_period_start, current_period_end}`. The top-level price, product, quantity and period columns repeat the first item.
+  - An item list Stripe marks `has_more`, or any item missing its price or product, fails the event without writing.
+  - 2 new tests. Checked on a real two-item Checkout in the sandbox.
+- **Open-source release:** MIT `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, private vulnerability reporting in `SECURITY.md`, and package metadata. `package.json` is no longer `private`, and the package ships `src/` next to `dist/` so its source maps resolve.
+- **Size:** `src/` is 706 lines; `process-event.ts` is 252, inside the 250–350 estimate.
 - **Mutation check:** the original 8 mechanisms and 4 mutations of the read-order shortcut were each broken on purpose, and at least one test failed for each.
 
 ## 1. Files

@@ -20,7 +20,18 @@ export interface CheckoutSessionLike {
   client_reference_id?: string | null;
 }
 
-/** What the core writes. Times are unix seconds, converted to timestamptz in SQL. */
+/** One subscription item, stored as-is in the row's `items` jsonb. Times are unix seconds. */
+export interface SnapshotItem {
+  id: string;
+  price_id: string;
+  product_id: string;
+  quantity: number | null;
+  current_period_start: number;
+  current_period_end: number;
+}
+
+/** What the core writes. Times are unix seconds, converted to timestamptz in SQL.
+ *  price_id, product_id, quantity and the periods repeat the first item, for simple queries. */
 export interface Snapshot {
   user_id: string;
   customer_id: string;
@@ -30,6 +41,8 @@ export interface Snapshot {
   quantity: number | null;
   current_period_start: number;
   current_period_end: number;
+  /** Every item on the subscription, in Stripe's order. */
+  items: SnapshotItem[];
   cancel_at_period_end: boolean;
   cancel_at: number | null;
   canceled_at: number | null;
@@ -50,6 +63,7 @@ export interface StoredSubscription {
   quantity: number | null;
   current_period_start: string;
   current_period_end: string;
+  items: SnapshotItem[];
   cancel_at_period_end: boolean;
   cancel_at: string | null;
   canceled_at: string | null;

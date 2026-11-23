@@ -18,6 +18,10 @@ export interface SubscriptionOptions {
   start?: number;
   end?: number;
   shape?: Shape;
+  /** Further items after the first, e.g. an add-on. Same period fields as the first item. */
+  extraItems?: Array<{ price: string; product: string; quantity?: number }>;
+  /** Mark the embedded item list as incomplete, as Stripe does with `has_more: true`. */
+  itemsHasMore?: boolean;
   omit?: string[]; // dotted paths to delete, for missing-field tests
 }
 
@@ -47,13 +51,27 @@ export function subscription(o: SubscriptionOptions = {}): Record<string, unknow
     canceled_at: terminal ? start + DAY : null,
     ended_at: terminal ? start + DAY : null,
     trial_end: null,
-    items: { object: 'list', data: [item] },
   };
-  if (shape === 'items') {
-    item.current_period_start = start;
-    item.current_period_end = end;
-  } else {
-    item.plan = { id: price, object: 'plan', product };
+  const items: Record<string, unknown>[] = [
+    item,
+    ...(o.extraItems ?? []).map((x, i) => ({
+      id: `si_${id}_${i + 2}`,
+      object: 'subscription_item',
+      price: { id: x.price, object: 'price', product: x.product },
+      quantity: x.quantity ?? 1,
+    })),
+  ];
+  sub.items = { object: 'list', has_more: o.itemsHasMore ?? false, data: items };
+  for (const it of items) {
+    if (shape === 'items') {
+      it.current_period_start = start;
+      it.current_period_end = end;
+    } else {
+      const p = it.price as { id: string; product: unknown };
+      it.plan = { id: p.id, object: 'plan', product: p.product };
+    }
+  }
+  if (shape === 'legacy') {
     sub.current_period_start = start;
     sub.current_period_end = end;
   }

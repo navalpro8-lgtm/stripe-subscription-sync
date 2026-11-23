@@ -22,7 +22,7 @@ Creating Checkout Sessions, setting `client_reference_id`, customer portals and 
 
 ## Other limits
 
-- **One item per subscription.** Only `items.data[0]` (price, product, quantity, periods) is stored. A warning is logged when a subscription has more items.
+- **Items:** every item is stored in `items`. The top-level `price_id`, `product_id`, `quantity` and period columns repeat the *first* item only, for simple queries; write per-product rules against `items`. If Stripe marks the embedded item list incomplete (`has_more`), the event fails rather than storing part of it, and v1 does not page through the list.
 - **Stripe reads can be stale.** Compare-and-swap protects against concurrent local writers. It does not make Stripe's API reads linearizable: a fetch can return a state older than one already seen. Tombstones stop a stale read from undoing a cancellation, and a `customer.subscription.deleted` event whose fetch is not yet terminal is retried. A stale read of a live state can still briefly overwrite a newer live state until the next event. The read-order shortcut relies on the same assumption: a Stripe read that begins after an event arrived reflects that event's change. A stale read breaks that assumption exactly as it breaks compare-and-swap.
 - **Many events for one subscription at once** mostly end as `skipped` (already covered by a later read) rather than each fetching from Stripe. That is intended. Under extreme contention an event can still exhaust its 5 retries and be left `failed` for Stripe to redeliver; the local load test saw none after the shortcut was added.
 - **A subscription Stripe cannot find (404) fails the event** and is retried until Stripe gives up. There is no special handling.
@@ -30,5 +30,5 @@ Creating Checkout Sessions, setting `client_reference_id`, customer portals and 
 - **Once tombstoned, a row never changes again**, including later field corrections Stripe might make to a canceled subscription.
 - **Live and test mode share the tables.** Use separate databases (or schemas) per Stripe mode.
 - **One Stripe account.** Stripe Connect and multiple accounts are not handled.
-- **Stripe API versions:** the automated tests use synthetic 2025-03-31.basil and 2025-02-24.acacia shapes (see [fixtures/README.md](fixtures/README.md)). One manual sandbox run also passed with 2026-09-30.endive events and 2026-10-28.endive subscriptions. Other versions were not checked.
-- **Supabase** has been checked on one real project, manually. Checkout-driven linking and Data API access with a real user JWT were not exercised; see the README's compatibility table.
+- **Stripe API versions:** the automated tests use synthetic 2025-03-31.basil and 2025-02-24.acacia shapes (see [fixtures/README.md](fixtures/README.md)). The manual sandbox runs also passed with 2026-09-30.endive events and 2026-10-28.endive subscriptions. Other versions were not checked.
+- **Supabase** has been checked on one real project, manually, including Checkout-driven linking. Data API access with a real user JWT was not exercised; see the README's compatibility table.

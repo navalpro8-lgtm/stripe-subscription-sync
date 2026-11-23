@@ -61,6 +61,59 @@ describe.each(ADAPTERS)('payload shapes (%s adapter)', (adapter) => {
     expect(await subscriptionRow(ctx.a, 'sub_plan')).toMatchObject({ product_id: 'prod_plan', price_id: 'plan_x' });
   });
 
+  test('multi_item_subscription_stores_every_item', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({
+      id: 'sub_multi', price: 'price_base', product: 'prod_base', quantity: 1,
+      extraItems: [{ price: 'price_addon', product: 'prod_addon', quantity: 3 }],
+    }));
+    ctx.fake.set(subscription({
+      id: 'sub_multi_legacy', shape: 'legacy', price: 'price_base', product: 'prod_base',
+      extraItems: [{ price: 'price_seat', product: 'prod_seat', quantity: 5 }],
+    }));
+
+    for (const id of ['sub_multi', 'sub_multi_legacy']) {
+      expect((await w().deliver(event('customer.subscription.created', { id }))).status).toBe(200);
+    }
+
+    const period = { current_period_start: T0, current_period_end: T0 + 30 * DAY };
+    expect(await subscriptionRow(ctx.a, 'sub_multi')).toMatchObject({
+      price_id: 'price_base', product_id: 'prod_base', // first item, for simple queries
+      items: [
+        { id: 'si_sub_multi', price_id: 'price_base', product_id: 'prod_base', quantity: 1, ...period },
+        { id: 'si_sub_multi_2', price_id: 'price_addon', product_id: 'prod_addon', quantity: 3, ...period },
+      ],
+    });
+    // Legacy shape: item periods come from the subscription's top-level fields.
+    expect(await subscriptionRow(ctx.a, 'sub_multi_legacy')).toMatchObject({
+      items: [
+        { price_id: 'price_base', product_id: 'prod_base', ...period },
+        { price_id: 'price_seat', product_id: 'prod_seat', quantity: 5, ...period },
+      ],
+    });
+  });
+
+  test('incomplete_item_list_fails_without_state_change', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({ price: 'price_a' }));
+    await w().deliver(event('customer.subscription.created', { id: 'sub_1' }));
+    const before = await subscriptionRow(ctx.a);
+
+    // Stripe says the embedded item list is incomplete: refuse to write a partial picture.
+    ctx.fake.set(subscription({ price: 'price_b', itemsHasMore: true }));
+    const truncated = event('customer.subscription.updated', { id: 'sub_1' });
+    expect((await w().deliver(truncated)).status).toBe(500);
+    expect(String((await eventRow(ctx.a, truncated.id))?.last_error)).toMatch(/has_more/);
+
+    // A later item without a product is just as incomplete.
+    ctx.fake.set(subscription({ price: 'price_b', extraItems: [{ price: 'price_addon', product: 'prod_addon' }], omit: ['items.data.1.price.product'] }));
+    const noProduct = event('customer.subscription.updated', { id: 'sub_1' });
+    expect((await w().deliver(noProduct)).status).toBe(500);
+    expect(String((await eventRow(ctx.a, noProduct.id))?.last_error)).toMatch(/items\.data\[1\]/);
+
+    expect(await subscriptionRow(ctx.a)).toEqual(before);
+  });
+
   test('missing_required_field_fails_without_state_change_then_retry_succeeds', async () => {
     await linkCustomer(ctx.a, 'cus_1', USER_A);
     ctx.fake.set(subscription({ price: 'price_a' }));

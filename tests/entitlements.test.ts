@@ -12,6 +12,7 @@ const row = (status: string, id = `sub_${status}`): StoredSubscription => ({
   quantity: 1,
   current_period_start: '2026-01-01T00:00:00+00:00',
   current_period_end: '2026-02-01T00:00:00+00:00',
+  items: [{ id: 'si_1', price_id: 'price_1', product_id: 'prod_1', quantity: 1, current_period_start: 1767225600, current_period_end: 1769904000 }],
   cancel_at_period_end: false,
   cancel_at: null,
   canceled_at: null,

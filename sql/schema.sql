@@ -41,6 +41,8 @@ create table public.stripe_subscriptions (
   quantity             integer,
   current_period_start timestamptz not null,
   current_period_end   timestamptz not null,
+  items                jsonb not null    -- every subscription item, in Stripe's order (see Snapshot)
+                       check (jsonb_typeof(items) = 'array' and jsonb_array_length(items) > 0),
   cancel_at_period_end boolean not null,
   cancel_at            timestamptz,
   canceled_at          timestamptz,
@@ -167,13 +169,14 @@ begin
   -- the primary key; the loser's WHERE fails against the winner's revision 1: 'conflict'.
   insert into public.stripe_subscriptions as s (
     subscription_id, user_id, customer_id, status, price_id, product_id, quantity,
-    current_period_start, current_period_end, cancel_at_period_end,
+    current_period_start, current_period_end, items, cancel_at_period_end,
     cancel_at, canceled_at, ended_at, trial_end, tombstoned_at, revision, read_seq, last_event_id
   ) values (
     p_subscription_id, v_user_id, p_snapshot->>'customer_id', v_status,
     p_snapshot->>'price_id', p_snapshot->>'product_id', (p_snapshot->>'quantity')::integer,
     to_timestamp((p_snapshot->>'current_period_start')::bigint),
     to_timestamp((p_snapshot->>'current_period_end')::bigint),
+    p_snapshot->'items',
     (p_snapshot->>'cancel_at_period_end')::boolean,
     to_timestamp((p_snapshot->>'cancel_at')::bigint),
     to_timestamp((p_snapshot->>'canceled_at')::bigint),
@@ -190,6 +193,7 @@ begin
         quantity = excluded.quantity,
         current_period_start = excluded.current_period_start,
         current_period_end = excluded.current_period_end,
+        items = excluded.items,
         cancel_at_period_end = excluded.cancel_at_period_end,
         cancel_at = excluded.cancel_at, canceled_at = excluded.canceled_at,
         ended_at = excluded.ended_at, trial_end = excluded.trial_end,

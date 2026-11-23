@@ -105,7 +105,7 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     }
 
     // No transaction is open here: the Stripe call happens between two independent statements.
-    const fetched = toSnapshot(await stripe.retrieveSubscription(subscriptionId), subscriptionId, c.deps);
+    const fetched = toSnapshot(await stripe.retrieveSubscription(subscriptionId), subscriptionId);
 
     if (mustBeTerminal && !TERMINAL_STATUSES.has(fetched.status)) {
       // A deleted event, but Stripe's read does not show it yet. Do not write a live state.
@@ -166,12 +166,12 @@ async function linkFromCheckout(c: Context) {
 // types.ts, and to the table and apply_subscription_snapshot() in sql/schema.sql.
 
 /**
- * Maps a subscription returned by Stripe to the columns we store. Handles both payload shapes:
- * period fields on the subscription item (2025-03-31.basil and later) or top-level (earlier), and
- * product as an ID string or an expanded object. Throws MissingFieldError rather than writing
- * an incomplete row. Only the first subscription item is stored (see KNOWN_LIMITATIONS.md).
+ * Maps a subscription returned by Stripe to what we store. Handles both payload shapes: period
+ * fields on each subscription item (2025-03-31.basil and later) or top-level (earlier), and product
+ * as an ID string or an expanded object. Every item is kept. Throws rather than writing an
+ * incomplete row: MissingFieldError for a missing field, an error if the item list is truncated.
  */
-export function toSnapshot(raw: unknown, subscriptionId: string, deps?: Pick<SyncDeps, 'logger'>): Omit<Snapshot, 'user_id' | 'read_seq'> {
+export function toSnapshot(raw: unknown, subscriptionId: string): Omit<Snapshot, 'user_id' | 'read_seq'> {
   const sub = rec(raw);
   const where = `subscription ${subscriptionId}`;
   const need = <T>(value: T | null, field: string): T => {
@@ -182,20 +182,38 @@ export function toSnapshot(raw: unknown, subscriptionId: string, deps?: Pick<Syn
   if (need(str(sub.id), 'id') !== subscriptionId) {
     throw new Error(`Stripe returned subscription ${String(sub.id)} when asked for ${subscriptionId}`);
   }
-  const items = Array.isArray(rec(sub.items).data) ? (rec(sub.items).data as unknown[]) : [];
-  if (items.length > 1) deps?.logger?.warn?.('subscription has several items; only the first is stored', { subscriptionId });
-  const item = rec(need(items[0] ?? null, 'items.data[0]'));
-  const price = rec(item.price);
-  const plan = rec(item.plan);
+  const list = rec(sub.items);
+  if (list.has_more === true) {
+    throw new Error(`Stripe returned an incomplete item list (has_more) for ${where}; refusing a partial write`);
+  }
+  const rawItems = Array.isArray(list.data) ? (list.data as unknown[]) : [];
+  if (rawItems.length === 0) throw new MissingFieldError('items.data[0]', where);
+
+  const items = rawItems.map((raw, i) => {
+    const item = rec(raw);
+    const price = rec(item.price);
+    const plan = rec(item.plan); // legacy item shape
+    const field = `items.data[${i}]`;
+    return {
+      id: need(str(item.id), `${field}.id`),
+      price_id: need(str(price.id) ?? str(plan.id), `${field}.price.id`),
+      product_id: need(idOf(price.product) ?? idOf(plan.product), `${field}.price.product`),
+      quantity: num(item.quantity),
+      current_period_start: need(num(item.current_period_start) ?? num(sub.current_period_start), `${field}.current_period_start`),
+      current_period_end: need(num(item.current_period_end) ?? num(sub.current_period_end), `${field}.current_period_end`),
+    };
+  });
+  const first = items[0]!;
 
   return {
     customer_id: need(idOf(sub.customer), 'customer'),
     status: need(str(sub.status), 'status'),
-    price_id: need(str(price.id) ?? str(plan.id), 'items.data[0].price.id'),
-    product_id: need(idOf(price.product) ?? idOf(plan.product), 'items.data[0].price.product'),
-    quantity: num(item.quantity),
-    current_period_start: need(num(item.current_period_start) ?? num(sub.current_period_start), 'current_period_start'),
-    current_period_end: need(num(item.current_period_end) ?? num(sub.current_period_end), 'current_period_end'),
+    price_id: first.price_id,
+    product_id: first.product_id,
+    quantity: first.quantity,
+    current_period_start: first.current_period_start,
+    current_period_end: first.current_period_end,
+    items,
     cancel_at_period_end: need(typeof sub.cancel_at_period_end === 'boolean' ? sub.cancel_at_period_end : null, 'cancel_at_period_end'),
     cancel_at: num(sub.cancel_at),
     canceled_at: num(sub.canceled_at),

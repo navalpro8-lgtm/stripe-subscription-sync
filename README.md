@@ -2,12 +2,12 @@
 
 A small module that keeps a database copy of Stripe subscription state correct when webhooks arrive duplicated, out of order, concurrently, or while a worker crashes. It comes with plain-Postgres SQL, Supabase RLS/grants, thin adapters (Next.js route, Supabase RPC, Postgres query), and a minimal [Next.js + Supabase example](examples/nextjs-supabase).
 
-It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)).
+It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)). MIT licensed ([LICENSE](LICENSE)); changes are listed in [CHANGELOG.md](CHANGELOG.md), and [CONTRIBUTING.md](CONTRIBUTING.md) says how to propose one.
 
 ## What it does
 
 - **Verify and record:** verifies the webhook signature on the raw body, then records each event once in `stripe_events` with a claim, so duplicates and concurrent deliveries apply once and a crashed worker's event is picked up again.
-- **Write from Stripe, not the payload:** for subscription and invoice events, re-fetches the subscription from Stripe and writes it with compare-and-swap on a per-row `revision`.
+- **Write from Stripe, not the payload:** for subscription and invoice events, re-fetches the subscription from Stripe and writes it with compare-and-swap on a per-row `revision`. Every subscription item (base plan, add-ons, seats) is stored in the row's `items`.
 - **Tombstone cancellations:** cancelled subscriptions become tombstones that later, stale writes cannot undo.
 - **Link customers to users:** links a Stripe customer to your user id from `checkout.session.completed` (`client_reference_id`).
 - **Entitlement on read:** computes a user's entitlement when it is read, from their rows, with a policy you own.
@@ -33,7 +33,7 @@ You will not absorb every SQL edge case in 15 minutes. You will know which files
 
 ## Setup
 
-1. **Get the code.** Copy `src/` and `sql/` into your project. Or depend on this repository and import from `stripe-subscription-sync` after `npm run build`. There are no runtime dependencies: you pass in your own `stripe`, `pg` or supabase-js client.
+1. **Get the code.** Copy `src/` and `sql/` into your project, which is best if you want to own and edit it. Or install it as a package: it is not on npm yet, so point a git or `file:` dependency at this repository and run `npm run build` there. There are no runtime dependencies: you pass in your own `stripe`, `pg` or supabase-js client.
 2. **Create the tables.** Run [sql/schema.sql](sql/schema.sql). On Supabase, also run [sql/supabase.sql](sql/supabase.sql), for example as migrations or in the SQL editor.
 3. **Wire a route.** This is the Next.js App Router version; [examples/nextjs-supabase](examples/nextjs-supabase) has the full file:
 
@@ -107,6 +107,7 @@ Every test except the policy unit tests asserts database state, against a real P
 | A cancelled subscription is never brought back, and a deletion is never treated as done until a terminal status is read | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried`, `deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot` |
 | One subscription's cancellation does not revoke another | `cancellation_does_not_revoke_another_active_subscription` |
 | Invoice subscription id read from both shapes; period fields from both locations; product as id or object | `invoice_new_and_old_shape`, `period_fields_new_and_legacy_location`, `product_as_id_string` |
+| Every subscription item is stored; an incomplete item list (`has_more`) or an item without a product fails without writing | `multi_item_subscription_stores_every_item`, `incomplete_item_list_fails_without_state_change` |
 | Plan changes and cancel-at-period-end are reflected | `downgrade_and_cancellation` |
 | Entitlement comes from committed rows only | `entitlement_reflects_latest_committed_rows` |
 | Missing or invalid user mapping fails and retries; links and owners never move | `subscription_before_checkout_link_fails_then_succeeds_after_link`, `checkout_without_client_reference_id_fails_and_writes_nothing`, `customer_link_is_never_reassigned`, `subscription_owner_never_changes` |
@@ -156,7 +157,7 @@ These numbers say nothing about real Stripe latency, Supabase, or a deployed ser
 |---|---|
 | **Tested** (all run locally on Windows 11 on 2026-11-23; CI has not run yet) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **Manual end-to-end runs** (see [below](#manual-end-to-end-run)). **The local load test** above |
 | **Expected to work** (configured, not yet run) | Node 22.12+ and 24 (the CI matrix); Postgres 17 as a service container in GitHub Actions; `docker-compose.yml` |
-| **Unverified** | **Checkout:** `checkout.session.completed` from a real Checkout; in the manual run the customer link was inserted by hand. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** heavy concurrent or racing deliveries on real infrastructure; the automated suite forces them locally, the load test runs them locally, and the real run saw only pairs of simultaneous events. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
+| **Unverified** | **Checkout in a browser:** a person paying on Stripe's hosted page. The third manual run completed Checkout through Stripe's test-mode API with the test card token instead. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** heavy concurrent or racing deliveries on real infrastructure; the automated suite forces them locally, the load test runs them locally, and the real run saw only pairs of simultaneous events. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
 
 ### Manual end-to-end run
 
@@ -187,12 +188,19 @@ The run went through these steps:
 4. **Final state:** `canceled`, tombstoned, Basic price, revision 4. Exactly 4 events wrote, and none was left `processing`.
 5. **Permissions:** `authenticated` and `anon` can neither use `stripe_sync_seq` nor execute `begin_subscription_read`; `service_role` can.
 
+**Third run, Checkout and multi-item:** this run used the schema with every item stored (`items`), applied fresh. A subscription-mode Checkout Session was created server-side with `client_reference_id` set to a test user and two line items (Pro ×1, Basic ×2). It was completed through Stripe's test-mode payment-page API with the published test token `tok_visa`, the same way `stripe trigger checkout.session.completed` does it.
+
+1. **Link:** `checkout.session.completed` linked the new customer to that user. The link row records that event's id.
+2. **Subscription row:** written for that user, `active`, with both items and their quantities in `items`.
+3. **Simultaneous events:** `customer.subscription.created` arrived together with `invoice.paid` and was `skipped` by the read-order rule.
+4. **Entitlement:** `active`.
+
 **Advisor findings:** Supabase's security advisor flagged two things. One is an informational note that `stripe_events` and `stripe_customer_links` have RLS but no policies, which is intended. The other is a warning about a `public.rls_auto_enable()` function that came with the new project, not from this repo.
 
 ## Size
 
-`src/` is 674 lines: `process-event.ts` 234, `types.ts` 135, `errors.ts` 26, the rest under 80 each. `sql/schema.sql` is 263 lines.
+`src/` is 706 lines: `process-event.ts` 252, `types.ts` 149, `errors.ts` 26, the rest under 80 each. `sql/schema.sql` is 267 lines.
 
 ## Docs
 
-[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md)
+[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
