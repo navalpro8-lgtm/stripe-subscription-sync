@@ -1,0 +1,42 @@
+{
+  "name": "stripe-subscription-sync",
+  "version": "0.1.0",
+  "description": "Keeps a database copy of Stripe subscription state correct under duplicate, reordered and concurrent webhook deliveries.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "sql"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "22.20.4",
+    "@types/pg": "8.23.1",
+    "embedded-postgres": "17.11.0-beta.19",
+    "eslint": "9.39.5",
+    "pg": "8.23.1",
+    "stripe": "23.1.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.1.0"
+  },
+  "private": true
+}

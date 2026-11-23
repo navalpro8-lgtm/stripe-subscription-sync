@@ -1,0 +1,67 @@
+{
+  "_provenance": "synthetic",
+  "_models": "invoice.paid with parent.subscription_details.subscription (2025-03-31.basil)",
+  "event": {
+    "id": "evt_fx_b_invoice",
+    "object": "event",
+    "api_version": "2025-03-31.basil",
+    "type": "invoice.paid",
+    "created": 1767225600,
+    "livemode": false,
+    "pending_webhooks": 1,
+    "data": {
+      "object": {
+        "id": "in_fx1",
+        "object": "invoice",
+        "customer": "cus_fx1",
+        "status": "paid",
+        "parent": {
+          "type": "subscription_details",
+          "quote_details": null,
+          "subscription_details": {
+            "subscription": "sub_fx1",
+            "metadata": {}
+          }
+        }
+      }
+    }
+  },
+  "retrieve": {
+    "id": "sub_fx1",
+    "object": "subscription",
+    "customer": "cus_fx1",
+    "status": "active",
+    "livemode": false,
+    "billing_cycle_anchor": 1767225600,
+    "cancel_at": null,
+    "cancel_at_period_end": false,
+    "canceled_at": null,
+    "ended_at": null,
+    "trial_end": null,
+    "metadata": {},
+    "items": {
+      "object": "list",
+      "has_more": false,
+      "data": [
+        {
+          "id": "si_fx1",
+          "object": "subscription_item",
+          "quantity": 1,
+          "current_period_start": 1767225600,
+          "current_period_end": 1769904000,
+          "price": {
+            "id": "price_fx_pro",
+            "object": "price",
+            "product": "prod_fx_pro",
+            "recurring": {
+              "interval": "month",
+              "interval_count": 1
+            },
+            "unit_amount": 2000,
+            "currency": "usd"
+          }
+        }
+      ]
+    }
+  }
+}

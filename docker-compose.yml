@@ -1,0 +1,11 @@
+# Optional: a local Postgres for the tests, as an alternative to the embedded one.
+#   docker compose up -d
+#   DATABASE_URL=postgres://postgres:postgres@localhost:54329/sss_test npm test
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sss_test
+    ports: ["54329:5432"]

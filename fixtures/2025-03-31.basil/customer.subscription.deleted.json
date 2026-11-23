@@ -1,0 +1,91 @@
+{
+  "_provenance": "synthetic",
+  "_models": "customer.subscription.deleted; retrieve shows status canceled (2025-03-31.basil)",
+  "event": {
+    "id": "evt_fx_b_deleted",
+    "object": "event",
+    "api_version": "2025-03-31.basil",
+    "type": "customer.subscription.deleted",
+    "created": 1767225600,
+    "livemode": false,
+    "pending_webhooks": 1,
+    "data": {
+      "object": {
+        "id": "sub_fx1",
+        "object": "subscription",
+        "customer": "cus_fx1",
+        "status": "canceled",
+        "livemode": false,
+        "billing_cycle_anchor": 1767225600,
+        "cancel_at": null,
+        "cancel_at_period_end": false,
+        "canceled_at": 1768089600,
+        "ended_at": 1768089600,
+        "trial_end": null,
+        "metadata": {},
+        "items": {
+          "object": "list",
+          "has_more": false,
+          "data": [
+            {
+              "id": "si_fx1",
+              "object": "subscription_item",
+              "quantity": 1,
+              "current_period_start": 1767225600,
+              "current_period_end": 1769904000,
+              "price": {
+                "id": "price_fx_pro",
+                "object": "price",
+                "product": "prod_fx_pro",
+                "recurring": {
+                  "interval": "month",
+                  "interval_count": 1
+                },
+                "unit_amount": 2000,
+                "currency": "usd"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "retrieve": {
+    "id": "sub_fx1",
+    "object": "subscription",
+    "customer": "cus_fx1",
+    "status": "canceled",
+    "livemode": false,
+    "billing_cycle_anchor": 1767225600,
+    "cancel_at": null,
+    "cancel_at_period_end": false,
+    "canceled_at": 1768089600,
+    "ended_at": 1768089600,
+    "trial_end": null,
+    "metadata": {},
+    "items": {
+      "object": "list",
+      "has_more": false,
+      "data": [
+        {
+          "id": "si_fx1",
+          "object": "subscription_item",
+          "quantity": 1,
+          "current_period_start": 1767225600,
+          "current_period_end": 1769904000,
+          "price": {
+            "id": "price_fx_pro",
+            "object": "price",
+            "product": "prod_fx_pro",
+            "recurring": {
+              "interval": "month",
+              "interval_count": 1
+            },
+            "unit_amount": 2000,
+            "currency": "usd"
+          }
+        }
+      ]
+    }
+  }
+}

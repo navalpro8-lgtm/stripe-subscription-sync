@@ -1,0 +1,25 @@
+{
+  "_provenance": "synthetic",
+  "_models": "checkout.session.completed, 2025-03-31.basil layout",
+  "event": {
+    "id": "evt_fx_b_checkout",
+    "object": "event",
+    "api_version": "2025-03-31.basil",
+    "type": "checkout.session.completed",
+    "created": 1767225600,
+    "livemode": false,
+    "pending_webhooks": 1,
+    "data": {
+      "object": {
+        "id": "cs_fx1",
+        "object": "checkout.session",
+        "mode": "subscription",
+        "status": "complete",
+        "customer": "cus_fx1",
+        "subscription": "sub_fx1",
+        "client_reference_id": "00000000-0000-4000-8000-0000000000f1",
+        "payment_status": "paid"
+      }
+    }
+  }
+}
