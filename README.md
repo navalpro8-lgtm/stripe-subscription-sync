@@ -83,6 +83,7 @@ Other frameworks: call [`processEvent(event, deps)`](src/core/process-event.ts) 
 | Claim ownership and takeover (120 s) | `claim_event`, `finish_event`, `holds_event_claim` in [schema.sql](sql/schema.sql) | `duplicate_while_processing_is_not_acknowledged_then_succeeds_after_first_finishes`, `stale_worker_cannot_apply_after_claim_takeover`, `expired_worker_cannot_mark_another_workers_attempt` ([concurrency](tests/concurrency.test.ts), [delivery](tests/webhook-delivery.test.ts)) |
 | Atomic revision compare-and-update | `apply_subscription_snapshot` in [schema.sql](sql/schema.sql); `syncSubscription()` in [process-event.ts](src/core/process-event.ts) | `overlapping_fetches_never_overwrite_a_newer_committed_write`, `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
 | First-insert handling | `INSERT ... ON CONFLICT` in `apply_subscription_snapshot` | `concurrent_first_insert_creates_one_subscription` |
+| Read-order shortcut (`received_seq` / `read_seq`) | `stripe_sync_seq`, `begin_subscription_read` in [schema.sql](sql/schema.sql); the `superseded` check in `syncSubscription()` | `event_already_covered_by_a_later_read_is_not_refetched`, `conflict_with_a_later_read_counts_as_done_without_retrying`, `deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot` |
 | Tombstones | `tombstoned_at` in `apply_subscription_snapshot`; terminal check in `syncSubscription()` | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried` |
 | Retry and crash recovery | `processEvent()` status handling; `claim_event` takeover | `crash_after_insert_is_recovered_on_retry`, `missing_required_field_fails_without_state_change_then_retry_succeeds`, `subscription_before_checkout_link_fails_then_succeeds_after_link` |
 
@@ -98,11 +99,12 @@ Every test except the policy unit tests asserts database state, against a real P
 | A duplicate while another worker holds a fresh claim is not acknowledged (409), and no transaction is open during the Stripe call | `duplicate_while_processing_is_not_acknowledged_then_succeeds_after_first_finishes` |
 | Concurrent first writes create one row | `concurrent_first_insert_creates_one_subscription` |
 | A stale fetch never overwrites a newer committed write | `overlapping_fetches_never_overwrite_a_newer_committed_write` |
+| An event whose change is already covered by a Stripe read that began after it arrived is done (`skipped`) without another fetch or retry | `event_already_covered_by_a_later_read_is_not_refetched`, `conflict_with_a_later_read_counts_as_done_without_retrying` |
 | Conflicts are retried 5 times; then the event is `failed` and retryable | `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
 | A worker whose claim was taken over cannot write, or mark the event | `stale_worker_cannot_apply_after_claim_takeover`, `expired_worker_cannot_mark_another_workers_attempt` |
 | A crash after the claim does not strand the event | `crash_after_insert_is_recovered_on_retry` |
 | Missing required fields: 500, nothing written, retry succeeds | `missing_required_field_fails_without_state_change_then_retry_succeeds` |
-| A cancelled subscription is never brought back | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried` |
+| A cancelled subscription is never brought back, and a deletion is never treated as done until a terminal status is read | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried`, `deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot` |
 | One subscription's cancellation does not revoke another | `cancellation_does_not_revoke_another_active_subscription` |
 | Invoice subscription id read from both shapes; period fields from both locations; product as id or object | `invoice_new_and_old_shape`, `period_fields_new_and_legacy_location`, `product_as_id_string` |
 | Plan changes and cancel-at-period-end are reflected | `downgrade_and_cancellation` |
@@ -124,19 +126,37 @@ By default the tests download nothing extra at run time. They start a throwaway 
 
 To use your own server instead, set `DATABASE_URL`, for example with `docker compose up -d` and `DATABASE_URL=postgres://postgres:postgres@localhost:54329/sss_test`. The tests drop and recreate the `public` schema, so they refuse any database whose name does not contain `test`. No Stripe account is needed: signatures use the real Stripe SDK with a fake secret, and retrieval uses an in-memory [FakeStripe](tests/support/fake-stripe.ts) whose delays the tests control.
 
+### Load test (optional, local only)
+
+[bench/load-test.mjs](bench/load-test.mjs) sends 100 concurrent connections for 10 s at the webhook handler. It uses a throwaway embedded Postgres, a fake Stripe that takes 20–80 ms per read, and events signed with a local secret. It then checks the database: every event that wrote did so exactly once, each row ends at Stripe's state, and nothing is left `processing`.
+
+```sh
+npm run build && npm i --no-save autocannon@8.0.0 && node bench/load-test.mjs
+```
+
+Results on this Windows laptop, 2026-11-23, after the read-order shortcut was added. Every database check held, and no event was left `processing` after in-flight requests finished.
+
+| Scenario | Requests in 10 s | Throughput | Latency p50 / p99 | Outcome |
+|---|---|---|---|---|
+| Same event from 100 connections | ~21,000 | ~2,000/s | ~47 / 125 ms | applied once; the rest 200 or 409 |
+| 100 connections, distinct events, one subscription | ~8,500 | ~850/s | ~114 / 230 ms | 0 failed (before the shortcut: 207/s and 86% failed after retries) |
+| Distinct events over 50 subscriptions | ~8,600 | ~860/s | ~96 / 260 ms | 0 failed (before: 278 failed) |
+
+These numbers say nothing about real Stripe latency, Supabase, or a deployed server.
+
 ## Supabase notes
 
-- [sql/supabase.sql](sql/supabase.sql) enables RLS on all three tables, revokes everything, then grants explicitly. `authenticated` gets `SELECT` on its own `stripe_subscriptions` rows. Only `service_role` gets writes and function `EXECUTE`. No function is `SECURITY DEFINER`, and every function has a fixed `search_path`.
-- Supabase stopped auto-granting `anon`/`authenticated`/`service_role` on new tables in `public`. The change applied to new projects from 30 May 2026 and to all existing projects from **30 October 2026** ([Supabase changelog](https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically); [hardening guide](https://supabase.com/docs/guides/api/hardening-data-api)). Because the grants here are explicit, this module should not depend on that default either way. That has not been tested on a real Supabase project.
+- [sql/supabase.sql](sql/supabase.sql) enables RLS on all three tables, revokes everything, then grants explicitly. `authenticated` gets `SELECT` on its own `stripe_subscriptions` rows. Only `service_role` gets writes, function `EXECUTE` and use of the `stripe_sync_seq` sequence. No function is `SECURITY DEFINER`, and every function has a fixed `search_path`.
+- Supabase stopped auto-granting `anon`/`authenticated`/`service_role` on new tables in `public`. The change applied to new projects from 30 May 2026 and to all existing projects from **30 October 2026** ([Supabase changelog](https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically); [hardening guide](https://supabase.com/docs/guides/api/hardening-data-api)). Because the grants here are explicit, this module should not depend on that default either way. On a real project the grants were checked only with that default off (see the manual run below).
 - The permission tests run on plain Postgres with a stand-in for Supabase's roles and `auth.uid()` ([tests/support/supabase-shim.sql](tests/support/supabase-shim.sql)). They test the SQL, not Supabase itself.
 
 ## Compatibility
 
 | Status | What |
 |---|---|
-| **Tested** (all run locally on Windows 11 on 2026-11-23; CI has not run yet) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **One manual end-to-end run** (see [below](#manual-end-to-end-run)) |
+| **Tested** (all run locally on Windows 11 on 2026-11-23; CI has not run yet) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **Manual end-to-end runs** (see [below](#manual-end-to-end-run)). **The local load test** above |
 | **Expected to work** (configured, not yet run) | Node 22.12+ and 24 (the CI matrix); Postgres 17 as a service container in GitHub Actions; `docker-compose.yml` |
-| **Unverified** | **Checkout:** `checkout.session.completed` from a real Checkout; in the manual run the customer link was inserted by hand. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** concurrent or racing deliveries on real infrastructure, which only the automated suite forces. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
+| **Unverified** | **Checkout:** `checkout.session.completed` from a real Checkout; in the manual run the customer link was inserted by hand. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** heavy concurrent or racing deliveries on real infrastructure; the automated suite forces them locally, the load test runs them locally, and the real run saw only pairs of simultaneous events. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
 
 ### Manual end-to-end run
 
@@ -159,11 +179,19 @@ The run went through these steps:
    - authenticated executing `claim_event`: permission denied.
    - The grants were as written in `supabase.sql`.
 
+**Second run, final schema:** this run used the schema with the read-order shortcut (`read_seq`), applied fresh to the same project. The customer was linked first, the normal order.
+
+1. **Created:** a trial subscription was created, and `customer.subscription.created` and `invoice.paid` arrived together. One wrote the row (revision 1). The other was `skipped`, because the row's Stripe read had begun after it arrived.
+2. **Downgrade:** the plan change also arrived as a pair (`invoice.paid` and `customer.subscription.updated`), with the same result: one wrote and one was skipped.
+3. **Cancel-at-period-end, duplicate and cancellation:** behaved as in the first run.
+4. **Final state:** `canceled`, tombstoned, Basic price, revision 4. Exactly 4 events wrote, and none was left `processing`.
+5. **Permissions:** `authenticated` and `anon` can neither use `stripe_sync_seq` nor execute `begin_subscription_read`; `service_role` can.
+
 **Advisor findings:** Supabase's security advisor flagged two things. One is an informational note that `stripe_events` and `stripe_customer_links` have RLS but no policies, which is intended. The other is a warning about a `public.rls_auto_enable()` function that came with the new project, not from this repo.
 
 ## Size
 
-`src/` is 650 lines: `process-event.ts` 226, `types.ts` 123, `errors.ts` 26, the rest under 75 each. `sql/schema.sql` is 246 lines.
+`src/` is 674 lines: `process-event.ts` 234, `types.ts` 135, `errors.ts` 26, the rest under 80 each. `sql/schema.sql` is 263 lines.
 
 ## Docs
 

@@ -27,10 +27,14 @@ export function storeFromFunctions(call: FunctionCaller): SyncStore {
       return r === true;
     },
 
-    async getRevision(subscriptionId) {
-      const r = await call('get_subscription_revision', { p_subscription_id: subscriptionId });
-      if (typeof r !== 'number') throw new Error(`get_subscription_revision returned ${JSON.stringify(r)}`);
-      return r;
+    async beginRead(subscriptionId, eventId) {
+      const r = (await call('begin_subscription_read', { p_subscription_id: subscriptionId, p_event_id: eventId })) as
+        | { revision?: unknown; read_seq?: unknown; superseded?: unknown }
+        | null;
+      if (typeof r?.revision !== 'number' || typeof r.read_seq !== 'string' || typeof r.superseded !== 'boolean') {
+        throw new Error(`begin_subscription_read returned ${JSON.stringify(r)}`);
+      }
+      return { revision: r.revision, readSeq: r.read_seq, superseded: r.superseded };
     },
 
     async applySnapshot(subscriptionId, expectedRevision, token, eventId, snapshot) {

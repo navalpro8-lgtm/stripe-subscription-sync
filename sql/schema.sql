@@ -5,17 +5,22 @@
 
 -- ---------------------------------------------------------------- tables
 
+-- One counter for "which happened first" comparisons, so they never depend on clocks.
+-- An event takes a value when it first arrives; every Stripe read takes one just before it starts.
+create sequence public.stripe_sync_seq;
+
 create table public.stripe_events (
-  event_id   text primary key,
-  event_type text not null,
-  status     text not null
-             check (status in ('processing', 'succeeded', 'failed', 'skipped', 'ignored')),
-  claimed_by uuid,
-  claimed_at timestamptz,
-  attempts   integer not null default 0,
-  last_error text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  event_id     text primary key,
+  event_type   text not null,
+  status       text not null
+               check (status in ('processing', 'succeeded', 'failed', 'skipped', 'ignored')),
+  received_seq bigint not null default nextval('public.stripe_sync_seq'),  -- first arrival
+  claimed_by   uuid,
+  claimed_at   timestamptz,
+  attempts     integer not null default 0,
+  last_error   text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
 );
 
 -- One Stripe customer belongs to one application user. A user may have several customers.
@@ -43,6 +48,7 @@ create table public.stripe_subscriptions (
   trial_end            timestamptz,
   tombstoned_at        timestamptz,    -- set once the status is terminal; the row is then frozen
   revision             integer not null check (revision > 0),
+  read_seq             bigint not null,  -- taken just before the Stripe read this row came from
   last_event_id        text not null,
   updated_at           timestamptz not null default now()
 );
@@ -115,18 +121,27 @@ $$;
 
 -- ---------------------------------------------------------------- subscriptions
 
-create function public.get_subscription_revision(p_subscription_id text)
-returns integer
+-- Called just before fetching from Stripe. Returns the stored revision (0 if no row), a read_seq
+-- marking the start of this read, and whether the stored row already came from a read that
+-- started after this event first arrived (that read then already reflects the event's change).
+create function public.begin_subscription_read(p_subscription_id text, p_event_id text)
+returns jsonb
 language sql
-stable
+volatile
 set search_path = public
 as $$
-  select coalesce((select revision from public.stripe_subscriptions
-                    where subscription_id = p_subscription_id), 0);
+  select jsonb_build_object(
+    'revision',   coalesce(s.revision, 0),
+    'read_seq',   nextval('public.stripe_sync_seq')::text,
+    'superseded', coalesce(s.read_seq > e.received_seq, false))
+  from (select 1) as one
+  left join public.stripe_subscriptions s on s.subscription_id = p_subscription_id
+  left join public.stripe_events e on e.event_id = p_event_id;
 $$;
 
 -- Compare-and-swap write. Returns 'applied', 'conflict', 'claim_lost', 'tombstoned' or
 -- 'user_mismatch'. Anything but 'applied' writes nothing. One call = one transaction.
+-- p_snapshot also carries the read_seq returned by begin_subscription_read.
 create function public.apply_subscription_snapshot(
   p_subscription_id   text,
   p_expected_revision integer,
@@ -153,7 +168,7 @@ begin
   insert into public.stripe_subscriptions as s (
     subscription_id, user_id, customer_id, status, price_id, product_id, quantity,
     current_period_start, current_period_end, cancel_at_period_end,
-    cancel_at, canceled_at, ended_at, trial_end, tombstoned_at, revision, last_event_id
+    cancel_at, canceled_at, ended_at, trial_end, tombstoned_at, revision, read_seq, last_event_id
   ) values (
     p_subscription_id, v_user_id, p_snapshot->>'customer_id', v_status,
     p_snapshot->>'price_id', p_snapshot->>'product_id', (p_snapshot->>'quantity')::integer,
@@ -166,6 +181,7 @@ begin
     to_timestamp((p_snapshot->>'trial_end')::bigint),
     case when v_status in ('canceled', 'incomplete_expired') then now() end,
     p_expected_revision + 1,
+    (p_snapshot->>'read_seq')::bigint,
     p_event_id
   )
   on conflict (subscription_id) do update
@@ -178,7 +194,8 @@ begin
         cancel_at = excluded.cancel_at, canceled_at = excluded.canceled_at,
         ended_at = excluded.ended_at, trial_end = excluded.trial_end,
         tombstoned_at = excluded.tombstoned_at,
-        revision = s.revision + 1, last_event_id = excluded.last_event_id, updated_at = now()
+        revision = s.revision + 1, read_seq = excluded.read_seq,
+        last_event_id = excluded.last_event_id, updated_at = now()
     where s.revision = p_expected_revision
       and s.tombstoned_at is null
       and s.user_id = excluded.user_id;

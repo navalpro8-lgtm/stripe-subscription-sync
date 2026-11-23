@@ -22,8 +22,8 @@ async function as<T>(role: 'anon' | 'authenticated' | 'service_role', userId: st
 const insertSub = (id: string, userId: string) =>
   db.query(
     `insert into public.stripe_subscriptions (subscription_id, user_id, customer_id, status, price_id, product_id,
-       current_period_start, current_period_end, cancel_at_period_end, revision, last_event_id)
-     values ($1, $2, 'cus_' || $1, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', false, 1, 'evt_setup')`,
+       current_period_start, current_period_end, cancel_at_period_end, revision, read_seq, last_event_id)
+     values ($1, $2, 'cus_' || $1, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', false, 1, 1, 'evt_setup')`,
     [id, userId],
   );
 
@@ -31,7 +31,7 @@ const FUNCTIONS = [
   `public.claim_event('evt_x', 'customer.subscription.created', gen_random_uuid())`,
   `public.finish_event('evt_x', gen_random_uuid(), 'succeeded', null)`,
   `public.holds_event_claim('evt_x', gen_random_uuid())`,
-  `public.get_subscription_revision('sub_a')`,
+  `public.begin_subscription_read('sub_a', 'evt_x')`,
   `public.apply_subscription_snapshot('sub_a', 1, gen_random_uuid(), 'evt_x', '{}'::jsonb)`,
   `public.list_user_subscriptions('${USER_A}')`,
   `public.link_customer('cus_x', '${USER_B}', 'evt_x', gen_random_uuid())`,

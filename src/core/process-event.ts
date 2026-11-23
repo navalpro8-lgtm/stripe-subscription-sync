@@ -95,7 +95,15 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
   for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
     if (attempt > 0) await sleep(10 + Math.random() * 40);
 
-    const expectedRevision = await store.getRevision(subscriptionId);
+    const read = await store.beginRead(subscriptionId, c.event.id);
+    // The stored row came from a Stripe read that started after this event arrived, so it already
+    // reflects this event's change: nothing to fetch or write. After a conflict this is usually
+    // why. Deletions still insist on seeing a terminal status themselves.
+    if (read.superseded && !mustBeTerminal) {
+      logger?.info?.('a later Stripe read already covers this event', { subscriptionId, eventId: c.event.id });
+      return 'skipped';
+    }
+
     // No transaction is open here: the Stripe call happens between two independent statements.
     const fetched = toSnapshot(await stripe.retrieveSubscription(subscriptionId), subscriptionId, c.deps);
 
@@ -105,8 +113,8 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     }
 
     const userId = await c.users.userForSubscription({ id: subscriptionId, customerId: fetched.customer_id }, store);
-    const snapshot: Snapshot = { ...fetched, user_id: userId };
-    const result = await store.applySnapshot(subscriptionId, expectedRevision, c.token, c.event.id, snapshot);
+    const snapshot: Snapshot = { ...fetched, user_id: userId, read_seq: read.readSeq };
+    const result = await store.applySnapshot(subscriptionId, read.revision, c.token, c.event.id, snapshot);
 
     switch (result) {
       case 'applied':
@@ -163,7 +171,7 @@ async function linkFromCheckout(c: Context) {
  * product as an ID string or an expanded object. Throws MissingFieldError rather than writing
  * an incomplete row. Only the first subscription item is stored (see KNOWN_LIMITATIONS.md).
  */
-export function toSnapshot(raw: unknown, subscriptionId: string, deps?: Pick<SyncDeps, 'logger'>): Omit<Snapshot, 'user_id'> {
+export function toSnapshot(raw: unknown, subscriptionId: string, deps?: Pick<SyncDeps, 'logger'>): Omit<Snapshot, 'user_id' | 'read_seq'> {
   const sub = rec(raw);
   const where = `subscription ${subscriptionId}`;
   const need = <T>(value: T | null, field: string): T => {

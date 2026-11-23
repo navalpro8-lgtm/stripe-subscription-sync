@@ -35,6 +35,8 @@ export interface Snapshot {
   canceled_at: number | null;
   ended_at: number | null;
   trial_end: number | null;
+  /** From beginRead(): marks when the Stripe read for this snapshot started. */
+  read_seq: string;
 }
 
 /** A row of stripe_subscriptions as returned by list_user_subscriptions (timestamps as ISO strings). */
@@ -55,6 +57,7 @@ export interface StoredSubscription {
   trial_end: string | null;
   tombstoned_at: string | null;
   revision: number;
+  read_seq: number | string;
   last_event_id: string;
   updated_at: string;
 }
@@ -69,6 +72,15 @@ export interface SubscriptionRetriever {
 export type ClaimResult = 'claimed' | 'done' | 'busy';
 export type FinalStatus = 'succeeded' | 'failed' | 'skipped' | 'ignored';
 export type ApplyResult = 'applied' | 'conflict' | 'claim_lost' | 'tombstoned' | 'user_mismatch';
+
+export interface ReadStart {
+  /** Stored revision, 0 if there is no row. */
+  revision: number;
+  /** Opaque marker taken now, before the Stripe read. Passed back in the snapshot. */
+  readSeq: string;
+  /** The stored row already came from a Stripe read that began after this event first arrived. */
+  superseded: boolean;
+}
 export type LinkResult = 'linked' | 'already_linked' | 'mismatch' | 'claim_lost';
 
 /** Extension point 3: persistence. The shipped adapters call the functions in sql/schema.sql. */
@@ -76,8 +88,8 @@ export interface SyncStore {
   claimEvent(eventId: string, eventType: string, token: string): Promise<ClaimResult>;
   /** Returns false if the caller no longer holds the claim (nothing was changed). */
   finishEvent(eventId: string, token: string, status: FinalStatus, error: string | null): Promise<boolean>;
-  /** 0 if there is no row. */
-  getRevision(subscriptionId: string): Promise<number>;
+  /** Call immediately before the Stripe read. */
+  beginRead(subscriptionId: string, eventId: string): Promise<ReadStart>;
   applySnapshot(
     subscriptionId: string,
     expectedRevision: number,

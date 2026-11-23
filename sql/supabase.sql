@@ -14,6 +14,10 @@ grant select, insert, update
   on table public.stripe_events, public.stripe_customer_links, public.stripe_subscriptions
   to service_role;
 
+-- The read-order counter: only service_role may draw from it (event inserts, Stripe reads).
+revoke all on sequence public.stripe_sync_seq from public, anon, authenticated, service_role;
+grant usage on sequence public.stripe_sync_seq to service_role;
+
 -- Authenticated users may read only their own subscription rows. No policies exist for the other
 -- two tables, so RLS denies every row there to anon and authenticated.
 grant select on table public.stripe_subscriptions to authenticated;
@@ -29,7 +33,7 @@ revoke execute on function
   public.claim_event(text, text, uuid),
   public.finish_event(text, uuid, text, text),
   public.holds_event_claim(text, uuid),
-  public.get_subscription_revision(text),
+  public.begin_subscription_read(text, text),
   public.apply_subscription_snapshot(text, integer, uuid, text, jsonb),
   public.list_user_subscriptions(text),
   public.link_customer(text, text, text, uuid),
@@ -40,7 +44,7 @@ grant execute on function
   public.claim_event(text, text, uuid),
   public.finish_event(text, uuid, text, text),
   public.holds_event_claim(text, uuid),
-  public.get_subscription_revision(text),
+  public.begin_subscription_read(text, text),
   public.apply_subscription_snapshot(text, integer, uuid, text, jsonb),
   public.list_user_subscriptions(text),
   public.link_customer(text, text, text, uuid),

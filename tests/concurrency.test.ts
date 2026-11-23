@@ -29,10 +29,62 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     const [r1, r2] = await Promise.all([p1, p2]);
     expect([r1.status, r2.status]).toEqual([200, 200]);
     const rows = await ctx.a.query('select revision from public.stripe_subscriptions');
-    expect(rows.rows).toEqual([{ revision: 2 }]); // one row; the loser retried on top of it
-    expect(await eventRow(ctx.a, created.id)).toMatchObject({ status: 'succeeded' });
-    expect(await eventRow(ctx.a, paid.id)).toMatchObject({ status: 'succeeded' });
-    expect(ctx.fake.calls).toHaveLength(3);
+    expect(rows.rows).toHaveLength(1); // one row, whichever insert won
+    // The loser either retried on top of the winner (succeeded) or found that the winner's
+    // Stripe read began after the loser's event arrived (skipped). Each success wrote once.
+    const statuses = [(await eventRow(ctx.a, created.id))?.status, (await eventRow(ctx.a, paid.id))?.status];
+    for (const s of statuses) expect(['succeeded', 'skipped']).toContain(s);
+    expect(rows.rows[0].revision).toBe(statuses.filter((s) => s === 'succeeded').length);
+  });
+
+  test('conflict_with_a_later_read_counts_as_done_without_retrying', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({ price: 'price_a' }));
+    const hA = ctx.fake.hold('sub_1');
+    const hB = ctx.fake.hold('sub_1');
+
+    // Event A arrives first and reads Stripe; event B arrives later and reads Stripe later.
+    const eventA = event('customer.subscription.created', { id: 'sub_1' });
+    const pA = w({ client: ctx.a }).deliver(eventA);
+    await hA.reached;
+    ctx.fake.set(subscription({ price: 'price_b' }));
+    const eventB = event('customer.subscription.updated', { id: 'sub_1' });
+    const pB = w({ client: ctx.b }).deliver(eventB);
+    await hB.reached;
+
+    // B commits first. B's read began after A arrived, so it already reflects A's change.
+    hB.release();
+    expect((await pB).status).toBe(200);
+    hA.release();
+    expect(await pA).toMatchObject({ status: 200, body: { outcome: 'skipped' } });
+
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_b', revision: 1, last_event_id: eventB.id });
+    expect(await eventRow(ctx.a, eventA.id)).toMatchObject({ status: 'skipped', attempts: 1 });
+    expect(ctx.fake.calls).toHaveLength(2); // A did not fetch again
+  });
+
+  test('event_already_covered_by_a_later_read_is_not_refetched', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({ price: 'price_a' }));
+
+    // Worker A claims its event, then stalls before reading the revision.
+    const beforeRead = gate();
+    const wA = w({
+      client: ctx.a,
+      wrapStore: (s) => ({ ...s, beginRead: async (...args) => { await beforeRead.pass(); return s.beginRead(...args); } }),
+    });
+    const eventA = event('customer.subscription.updated', { id: 'sub_1' });
+    const pA = wA.deliver(eventA);
+    await beforeRead.reached;
+
+    // Meanwhile a later event is read from Stripe and committed.
+    ctx.fake.set(subscription({ price: 'price_b' }));
+    expect((await w({ client: ctx.b }).deliver(event('customer.subscription.updated', { id: 'sub_1' }))).status).toBe(200);
+
+    beforeRead.release();
+    expect(await pA).toMatchObject({ status: 200, body: { outcome: 'skipped' } });
+    expect(ctx.fake.calls).toHaveLength(1); // only the later event fetched
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_b', revision: 1 });
   });
 
   test('overlapping_fetches_never_overwrite_a_newer_committed_write', async () => {
@@ -56,9 +108,11 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     holdA.release();
     expect((await pA).status).toBe(200);
 
-    // A's stale price_b snapshot hit a conflict; A re-read Stripe and wrote price_c again.
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_c', revision: 3, last_event_id: eventA.id });
-    expect(ctx.fake.calls).toHaveLength(4);
+    // A's stale price_b snapshot hit a conflict and was not written. B's read began after A's
+    // event arrived, so A counts as done without another fetch.
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_c', revision: 2 });
+    expect(await eventRow(ctx.a, eventA.id)).toMatchObject({ status: 'skipped' });
+    expect(ctx.fake.calls).toHaveLength(3);
   });
 
   test('conflict_retries_exhausted_leaves_event_failed_and_retryable', async () => {
@@ -127,21 +181,25 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     const pA = wA.deliver(evt);
     await beforeFinish.reached;
 
-    // A's claim expires; worker B takes over and is mid-fetch.
+    // A's claim expires; worker B takes over and stalls before marking too.
     await ageClaim(ctx.b, evt.id);
-    const holdB = ctx.fake.hold('sub_1');
-    const pB = w({ client: ctx.b }).deliver(evt);
-    await holdB.reached;
-    const tokenB = (await eventRow(ctx.b, evt.id))?.claimed_by;
+    const bBeforeFinish = gate();
+    const pB = w({
+      client: ctx.b,
+      wrapStore: (s) => ({ ...s, finishEvent: async (...args) => { await bBeforeFinish.pass(); return s.finishEvent(...args); } }),
+    }).deliver(evt);
+    await bBeforeFinish.reached;
+    const tokenB = (await eventRow(ctx.a, evt.id))?.claimed_by;
 
     beforeFinish.release();
     expect(await pA).toMatchObject({ status: 500, body: { outcome: 'claim_lost' } });
     // A could not mark B's attempt.
-    expect(await eventRow(ctx.b, evt.id)).toMatchObject({ status: 'processing', claimed_by: tokenB, attempts: 2 });
+    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'processing', claimed_by: tokenB, attempts: 2 });
 
-    holdB.release();
+    bBeforeFinish.release();
     expect((await pB).status).toBe(200);
-    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'succeeded', claimed_by: tokenB });
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ revision: 2 });
+    // B found A's committed read already covered this event, so it wrote nothing more.
+    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'skipped', claimed_by: tokenB });
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ revision: 1 });
   });
 });

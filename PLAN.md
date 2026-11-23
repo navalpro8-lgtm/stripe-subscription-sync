@@ -10,8 +10,15 @@ Status: **implemented**. The plan was approved with the defaults in §10, and `e
   - Node ≥ 22.12 (`vitest` 5 requires it) and TypeScript 6.0.3 (`typescript-eslint` does not support 7 yet).
   - Postgres 17 (embedded locally, and the service container in CI).
   - Dev dependencies are pinned to releases at least about two weeks old.
-- **Size:** `src/` is 650 lines; `process-event.ts` is 226, below the 250–350 estimate.
-- **Mutation check:** each correctness mechanism was broken on purpose (8 mutations) and at least one test failed for each.
+- **Read-order shortcut, added after a load test.** With 100 concurrent events for one subscription, 86% failed after exhausting retries. So:
+  - `get_subscription_revision` became `begin_subscription_read(subscription_id, event_id)`, and `SyncStore.getRevision` became `beginRead`.
+  - Events record `received_seq` and rows record `read_seq`, both from one sequence (`stripe_sync_seq`). A row whose Stripe read began after an event arrived already covers that event, so the event ends as `skipped` without a fetch. Deleted events are excluded.
+  - `apply_subscription_snapshot` keeps the signature in §4. `read_seq` travels inside the snapshot.
+  - A version that also returned `superseded` from the write function was removed: a mutation check showed it was redundant with the pre-read check on retry.
+  - 3 new tests.
+  - After the change the same load test had 0 failures.
+- **Size:** `src/` is 674 lines; `process-event.ts` is 234, below the 250–350 estimate.
+- **Mutation check:** the original 8 mechanisms and 4 mutations of the read-order shortcut were each broken on purpose, and at least one test failed for each.
 
 ## 1. Files
 

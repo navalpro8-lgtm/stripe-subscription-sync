@@ -61,6 +61,31 @@ describe.each(ADAPTERS)('lifecycle (%s adapter)', (adapter) => {
     expect(await subscriptionRow(ctx.a)).toMatchObject({ status: 'canceled', revision: 2 });
   });
 
+  test('deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({ status: 'active' }));
+    await send('customer.subscription.created');
+
+    // The deleted event reads "canceled" and is delayed...
+    ctx.fake.set(subscription({ status: 'canceled' }));
+    const hold = ctx.fake.hold('sub_1');
+    const deleted = event('customer.subscription.deleted', { id: 'sub_1' });
+    const pDeleted = w({ client: ctx.a }).deliver(deleted);
+    await hold.reached;
+
+    // ...while a later event gets a stale "active" read from Stripe and commits it.
+    ctx.fake.set(subscription({ status: 'active' }));
+    expect((await w({ client: ctx.b }).deliver(event('customer.subscription.updated', { id: 'sub_1' }))).status).toBe(200);
+
+    // That later read must not count as covering the deletion: the deleted event retries.
+    ctx.fake.set(subscription({ status: 'canceled' }));
+    hold.release();
+    expect(await pDeleted).toMatchObject({ status: 200, body: { outcome: 'succeeded' } });
+    const row = await subscriptionRow(ctx.a);
+    expect(row).toMatchObject({ status: 'canceled', revision: 3 });
+    expect(row?.tombstoned_at).toBeInstanceOf(Date);
+  });
+
   test('cancellation_does_not_revoke_another_active_subscription', async () => {
     await linkCustomer(ctx.a, 'cus_1', USER_A);
     ctx.fake.set(subscription({ id: 'sub_1', status: 'active' }));

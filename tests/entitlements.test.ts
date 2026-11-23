@@ -19,6 +19,7 @@ const row = (status: string, id = `sub_${status}`): StoredSubscription => ({
   trial_end: null,
   tombstoned_at: status === 'canceled' ? '2026-01-02T00:00:00+00:00' : null,
   revision: 1,
+  read_seq: 1,
   last_event_id: 'evt_1',
   updated_at: '2026-01-01T00:00:00+00:00',
 });
