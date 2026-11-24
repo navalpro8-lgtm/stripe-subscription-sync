@@ -156,6 +156,7 @@ Every test except the policy unit tests asserts database state, against a real P
 | One structured log line per delivery, with a correlation id stored on failures | `every_delivery_logs_one_structured_line`, `failed_event_stores_its_correlation_id` |
 | Oversized bodies get 413 and write nothing, with or without `Content-Length` | `oversized_body_gets_413_and_writes_nothing` |
 | The health queries run | `health_queries_run` |
+| Four processes against one Postgres, every event delivered by each: one row and one success per event, one link, each row at Stripe's state with one write per event | `several_processes_one_database_apply_each_event_once` |
 | Entitlement comes from committed rows only | `entitlement_reflects_latest_committed_rows` |
 | Missing or invalid user mapping fails and retries; links and owners never move | `subscription_before_checkout_link_fails_then_succeeds_after_link`, `checkout_without_client_reference_id_fails_and_writes_nothing`, `customer_link_is_never_reassigned`, `subscription_owner_never_changes` |
 | Unknown or disabled events: 200, recorded `ignored` | `unknown_and_disabled_events_are_acknowledged_as_ignored` |
@@ -168,11 +169,16 @@ Compare-and-swap prevents concurrent local workers from overwriting a subscripti
 ```sh
 npm ci
 npm run check        # lint, typecheck, tests, build
+npm run smoke:pack   # pack, install the tarball in a temp project, import and typecheck it
 ```
 
 By default the tests download nothing extra at run time. They start a throwaway Postgres from the `embedded-postgres` dev dependency, so Docker is not needed.
 
 To use your own server instead, set `DATABASE_URL`, for example with `docker compose up -d` and `DATABASE_URL=postgres://postgres:postgres@localhost:54329/sss_test`. The tests drop and recreate the `public` schema, so they refuse any database whose name does not contain `test`. No Stripe account is needed: signatures use the real Stripe SDK with a fake secret, and retrieval uses an in-memory [FakeStripe](tests/support/fake-stripe.ts) whose delays the tests control.
+
+The migration test creates and drops three extra databases next to the test database (names ending in `_test`), so the `DATABASE_URL` role needs `CREATEDB`. The multi-process test builds `dist/` and starts four Node processes.
+
+**`npm audit`** (2026-11-24): 7 moderate advisories, all in dev dependencies. typescript-eslint 8.x pulls in `minimatch` with a denial-of-service advisory, [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249). `npm audit --omit=dev` and the example app's `npm audit` report 0. The package itself has no runtime dependencies. The dev dependencies were deliberately not upgraded for this report.
 
 ### Load test (optional, local only, synthetic)
 
