@@ -1,16 +1,10 @@
-# Known limitations (v1)
+# Known limitations
 
-## No reconciliation endpoint
+## Reconciliation is manual
 
-The module only reacts to webhooks. If events are lost for good, the table can drift from Stripe and nothing in v1 will notice. Stripe retries a failed delivery for up to three days in live mode, and only three times over a few hours in a sandbox ([Stripe webhooks docs](https://docs.stripe.com/webhooks)). An event that keeps failing (for example a subscription whose customer is never linked) will eventually stop being retried.
+The module reacts to webhooks. If events are lost for good, a row can drift from Stripe, and nothing notices automatically. Stripe retries a failed delivery for up to three days in live mode, and three times over a few hours in a sandbox ([Stripe webhooks docs](https://docs.stripe.com/webhooks#automatic-retries)).
 
-Recovery in v1 is manual:
-
-1. Find events stuck as `failed` or `processing`: `select * from stripe_events where status in ('failed', 'processing') order by updated_at;`. `last_error` says why.
-2. Fix the cause (link the customer, fix a schema mismatch, ...).
-3. Resend the event from the Stripe Dashboard (up to 15 days after it was created) or with `stripe events resend <id>` (up to 30 days), per the same Stripe page. The normal path then re-fetches the subscription and writes it.
-
-Anything older than that needs a script you write: list subscriptions from Stripe and run each through the same compare-and-swap path. That script is not part of v1.
+`reconcileSubscription` and `reconcileCustomer` repair drift through the same compare-and-swap path, but only when you call them. There is no scheduled job, and no function that walks a whole Stripe account. [docs/RUNBOOK.md](docs/RUNBOOK.md) says when and how to run them, and [sql/health.sql](sql/health.sql) finds the events that need it.
 
 ## The entitlement policy is an example
 

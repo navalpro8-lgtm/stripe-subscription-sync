@@ -25,6 +25,17 @@ Stripe is the source of truth. An event only says *which* subscription to look a
 
 Compare-and-swap prevents concurrent local workers from overwriting a subscription snapshot without noticing an intervening database write; it does not guarantee that Stripe API reads are globally linearizable or always reflect the newest possible state.
 
+## Reconciliation
+
+`reconcileSubscription(id, deps)` and `reconcileCustomer(customerId, deps)` are library functions. Nothing schedules them.
+
+- **Same path:** a run claims a synthetic `stripe_events` row (`reconcile:<sub>:<uuid>`, type `reconcile`) and then runs the subscription write above. That covers the claim, `begin_subscription_read`, a fresh Stripe read and `apply_subscription_snapshot`. It never takes the read-order shortcut.
+- **Terminal subscriptions:** a tombstoned row is never changed (`tombstoned`). A first read that is already terminal writes the tombstone (`applied`).
+- **A webhook arriving mid-reconcile:** both writers use compare-and-swap. Whichever commits second gets `conflict`, re-reads Stripe and writes that read. Neither overwrites the other without a fresh read. This is tested in both orders.
+- **Stale reads:** a reconcile read is as fresh as Stripe makes it, and no fresher. A stale reconcile read can overwrite a newer live state until the next event or run, exactly like a stale webhook read.
+- **Typed results:** `applied | tombstoned | failed`. A failure carries a reason: `not_found`, `unlinked_customer`, `owner_mismatch`, `mapping`, `mode_mismatch`, `retries_exhausted`, `claim_lost` or `error`. Expected failures are returned, not thrown. Database errors are thrown. A failed run records `failed` on its own row, and nothing retries it.
+- **`reconcileCustomer`:** lists one customer's subscriptions with `status: 'all'`, 100 per page, following `starting_after`. It stops at `maxSubscriptions` (default 1000) with `truncated: true`. There is no "reconcile everything" function, because enumerating a whole account is unbounded.
+
 ## What each event does
 
 | Event | Effect |

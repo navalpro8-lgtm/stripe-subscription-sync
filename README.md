@@ -11,10 +11,13 @@ It is meant to be read, copied into your project, and adapted. It is a reference
 - **Tombstone cancellations:** cancelled subscriptions become tombstones that later, stale writes cannot undo.
 - **Link customers to users:** links a Stripe customer to your user id from `checkout.session.completed` (`client_reference_id`).
 - **Entitlement on read:** computes a user's entitlement when it is read, from their rows, with a policy you own.
+- **One Stripe mode per endpoint:** `livemode` is required; anything from the other mode is refused without writing.
+- **Reconcile on demand:** `reconcileSubscription` / `reconcileCustomer` repair drift through the same write path. You call them; see [docs/RUNBOOK.md](docs/RUNBOOK.md).
+- **Operable:** one structured, redacted log line per delivery, read-only health queries in [sql/health.sql](sql/health.sql), and a request body limit.
 
 ## What it does not do
 
-Checkout creation, authentication, UI, email, customer management, admin or reconciliation endpoints, plugins or hooks. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for what v1 leaves to you. That includes recovering from events Stripe has stopped retrying.
+Checkout creation, authentication, UI, email, customer management, admin or reconciliation endpoints, scheduled jobs, row deletion, Stripe Connect, plugins or hooks. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for what is left to you.
 
 ## 15-minute reading map
 
@@ -23,7 +26,8 @@ You will not absorb every SQL edge case in 15 minutes. You will know which files
 | # | Read | Purpose |
 |---|---|---|
 | 1 | This README, then [docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) | The algorithm in under 50 lines |
-| 2 | [src/core/process-event.ts](src/core/process-event.ts) | `processEvent()`, the three handlers, the retry loop, payload mapping |
+| 2 | [src/core/process-event.ts](src/core/process-event.ts) | `processEvent()`, the three handlers, the retry loop, payload mapping, logging |
+| 2b | [src/core/reconcile.ts](src/core/reconcile.ts) | `reconcileSubscription()` / `reconcileCustomer()` on the same write path |
 | 3 | [src/core/types.ts](src/core/types.ts) | Every interface the core depends on (all injected) |
 | 4 | [src/policy/entitlements.ts](src/policy/entitlements.ts) | The EXAMPLE entitlement policy and `getEntitlement()` |
 | 5 | [src/adapters/sql-functions.ts](src/adapters/sql-functions.ts) + [sql/schema.sql](sql/schema.sql) | The store, and the SQL functions where the atomicity lives |
@@ -96,6 +100,28 @@ A delivery holds its event's claim from `claim_event` until `finish_event`. Afte
 - **Too long:** after a crash, the event waits that long before a redelivery can take it over. Until then, redeliveries get 409.
 - **How to pick:** set it above the longest time one delivery can take. That is up to 6 attempts, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
 
+### Rotating the webhook secret
+
+Checked against [Stripe's docs](https://docs.stripe.com/webhooks) on 2026-11-24.
+
+- **Rolling:** in Workbench, an endpoint's signing secret can be rolled. The old secret either expires immediately or stays valid for up to 7 days.
+- **During the overlap:** multiple secrets are active, and Stripe generates one signature per secret. The `Stripe-Signature` header then carries several `v1` entries, and `constructEvent` accepts the event if any one matches.
+
+So `webhookSecret` stays a single string. To rotate:
+
+1. Roll the secret with a delay, for example 24 hours.
+2. Deploy the new secret before the old one expires.
+
+Events keep verifying throughout, because each one is signed with both secrets. If you expire the old secret immediately, requests fail with 400 `bad_signature` until the new secret is deployed. Stripe retries them, so nothing is lost inside its retry window.
+
+### Logs, health checks and limits
+
+- **Logs:** every delivery ends with one `stripe_sync.event` line, at `info`, or `error` for 400 and 5xx. Its fields are `eventId`, `eventType`, `outcome`, `httpStatus`, `attempts` (Stripe reads in this delivery), `durationMs` and a fresh `correlationId`. Reconcile runs log `stripe_sync.reconcile`.
+- **What is never logged:** payloads. Every string field, and every stored `last_error`, goes through `redact()`, which removes Stripe keys, `whsec_` secrets, JWTs and email addresses, and caps the length. A failed event's `last_error` ends with `[correlation <id>]`, so you can find its log line.
+- **Health:** [sql/health.sql](sql/health.sql) has read-only queries for abandoned claims, failures, events past Stripe's retry window, failed reconcile runs and the stored modes.
+- **Body limit:** the route rejects bodies over `maxBodyBytes` (default 1 MiB) with 413, before signature verification, and stops reading at the limit. Stripe does not document a maximum event size. Your host may have its own limit.
+- **Retention:** see [docs/RETENTION.md](docs/RETENTION.md) before deleting any rows.
+
 ## Guarantees, and the test for each
 
 Every test except the policy unit tests asserts database state, against a real Postgres.
@@ -123,6 +149,12 @@ Every test except the policy unit tests asserts database state, against a real P
 | Every subscription item is stored; an item without a product fails without writing | `multi_item_subscription_stores_every_item`, `incomplete_item_list_fails_without_state_change` |
 | An embedded item list with `has_more` is paged through (`subscriptionItems.list` in `fromStripeSdk`); a failure on any page fails the event and writes nothing; without a pager, `has_more` fails the event | `item_list_is_paged_when_has_more`, `failure_on_a_later_item_page_fails_without_writing`, `incomplete_item_list_fails_without_state_change`, `stripe_adapter_pages_items_with_subscription_items_list` |
 | Plan changes and cancel-at-period-end are reflected | `downgrade_and_cancellation` |
+| Reconcile repairs drift, respects tombstones, and is safe alongside a live event in either commit order | `reconcile_repairs_drift`, `reconcile_respects_tombstone`, `reconcile_concurrent_with_live_event_webhook_commits_first`, `reconcile_concurrent_with_live_event_reconcile_commits_first` |
+| Reconcile failures are typed results and write nothing; `reconcileCustomer` pages and reports truncation | `reconcile_returns_typed_failures_without_writing`, `reconcile_customer_pages_through_subscriptions` |
+| Secrets, keys, JWTs and emails in payloads or error messages never reach logs or `last_error` | `canaries_never_reach_logs_or_last_error` |
+| One structured log line per delivery, with a correlation id stored on failures | `every_delivery_logs_one_structured_line`, `failed_event_stores_its_correlation_id` |
+| Oversized bodies get 413 and write nothing, with or without `Content-Length` | `oversized_body_gets_413_and_writes_nothing` |
+| The health queries run | `health_queries_run` |
 | Entitlement comes from committed rows only | `entitlement_reflects_latest_committed_rows` |
 | Missing or invalid user mapping fails and retries; links and owners never move | `subscription_before_checkout_link_fails_then_succeeds_after_link`, `checkout_without_client_reference_id_fails_and_writes_nothing`, `customer_link_is_never_reassigned`, `subscription_owner_never_changes` |
 | Unknown or disabled events: 200, recorded `ignored` | `unknown_and_disabled_events_are_acknowledged_as_ignored` |
@@ -231,4 +263,4 @@ The run went through these steps:
 
 ## Docs
 
-[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
+[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [docs/RUNBOOK.md](docs/RUNBOOK.md) · [docs/RETENTION.md](docs/RETENTION.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
