@@ -37,6 +37,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "smoke:pack": "npm run build && node scripts/pack-smoke.mjs",
     "prepublishOnly": "npm run check"
   },
   "devDependencies": {
