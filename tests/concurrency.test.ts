@@ -30,14 +30,16 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     expect([r1.status, r2.status]).toEqual([200, 200]);
     const rows = await ctx.a.query('select revision from public.stripe_subscriptions');
     expect(rows.rows).toHaveLength(1); // one row, whichever insert won
-    // The loser either retried on top of the winner (succeeded) or found that the winner's
-    // Stripe read began after the loser's event arrived (skipped). Each success wrote once.
+    // With the shortcut off (default), the loser retried on top of the winner. Each success
+    // wrote once.
     const statuses = [(await eventRow(ctx.a, created.id))?.status, (await eventRow(ctx.a, paid.id))?.status];
-    for (const s of statuses) expect(['succeeded', 'skipped']).toContain(s);
-    expect(rows.rows[0].revision).toBe(statuses.filter((s) => s === 'succeeded').length);
+    expect(statuses).toEqual(['succeeded', 'succeeded']);
+    expect(rows.rows[0].revision).toBe(2);
   });
 
   test('conflict_with_a_later_read_counts_as_done_without_retrying', async () => {
+    // Read-order shortcut on (opt-in). With it off, A re-reads; see the _shortcut_off test below.
+    const w = (o: Partial<WorkerOptions> = {}) => worker({ adapter, client: ctx.a, fake: ctx.fake, readOrderShortcut: true, ...o });
     await linkCustomer(ctx.a, 'cus_1', USER_A);
     ctx.fake.set(subscription({ price: 'price_a' }));
     const hA = ctx.fake.hold('sub_1');
@@ -64,6 +66,7 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
   });
 
   test('event_already_covered_by_a_later_read_is_not_refetched', async () => {
+    const w = (o: Partial<WorkerOptions> = {}) => worker({ adapter, client: ctx.a, fake: ctx.fake, readOrderShortcut: true, ...o });
     await linkCustomer(ctx.a, 'cus_1', USER_A);
     ctx.fake.set(subscription({ price: 'price_a' }));
 
@@ -108,11 +111,11 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     holdA.release();
     expect((await pA).status).toBe(200);
 
-    // A's stale price_b snapshot hit a conflict and was not written. B's read began after A's
-    // event arrived, so A counts as done without another fetch.
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_c', revision: 2 });
-    expect(await eventRow(ctx.a, eventA.id)).toMatchObject({ status: 'skipped' });
-    expect(ctx.fake.calls).toHaveLength(3);
+    // A's stale price_b snapshot hit a conflict and was not written. With the shortcut off
+    // (default), A re-read Stripe (price_c) and wrote that.
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_c', revision: 3, last_event_id: eventA.id });
+    expect(await eventRow(ctx.a, eventA.id)).toMatchObject({ status: 'succeeded' });
+    expect(ctx.fake.calls).toHaveLength(4);
   });
 
   test('conflict_retries_exhausted_leaves_event_failed_and_retryable', async () => {
@@ -198,8 +201,8 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
 
     bBeforeFinish.release();
     expect((await pB).status).toBe(200);
-    // B found A's committed read already covered this event, so it wrote nothing more.
-    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'skipped', claimed_by: tokenB });
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ revision: 1 });
+    // B's own attempt stands; A's earlier write was made while A still held the claim.
+    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'succeeded', claimed_by: tokenB });
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ revision: 2, last_event_id: evt.id });
   });
 });

@@ -139,6 +139,18 @@ export interface SyncDeps {
   /** Extension point 4. Default: every implemented event (config/events.ts). */
   enabledEvents?: readonly ImplementedEvent[];
   logger?: Logger;
+  /**
+   * Read-order shortcut. Default false. When true, an event whose subscription row already came
+   * from a Stripe read that began after the event arrived ends as `skipped` without a fetch.
+   *
+   * ASSUMPTION: a Stripe read that starts after an event arrived reflects that event's change.
+   * Stripe does not document this. If such a read returns an older state, the shortcut skips
+   * the event and the row stays stale until another event for the subscription arrives (with
+   * the shortcut off, the event fetches again and writes the fresh state). Turn it on only if
+   * many events for one subscription arrive at once and you accept that risk; see
+   * docs/SYNC_MODEL.md and tests/read-order.test.ts.
+   */
+  readOrderShortcut?: boolean;
 }
 
 export type Outcome = FinalStatus | 'duplicate' | 'busy' | 'claim_lost';

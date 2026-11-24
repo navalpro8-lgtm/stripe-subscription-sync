@@ -4,7 +4,7 @@
 //   export const runtime = 'nodejs';
 //   export const POST = createNextWebhookHandler({ stripe, webhookSecret, sync });
 import { processEvent } from '../core/process-event.js';
-import { resolveEnabledEvents } from '../config/events.js';
+import { resolveOptions } from '../config/options.js';
 import type { StripeEventLike, SyncDeps } from '../core/types.js';
 
 /** The part of the Stripe SDK used here: signature verification. */
@@ -20,7 +20,7 @@ export interface NextWebhookOptions {
 
 export function createNextWebhookHandler({ stripe, webhookSecret, sync }: NextWebhookOptions) {
   if (!webhookSecret) throw new Error('createNextWebhookHandler: webhookSecret is required');
-  resolveEnabledEvents(sync.enabledEvents); // fail at startup on an unknown event name
+  resolveOptions(sync); // fail at startup on an invalid option or unknown event name
 
   return async function POST(req: Request): Promise<Response> {
     const signature = req.headers.get('stripe-signature');

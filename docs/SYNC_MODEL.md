@@ -11,13 +11,15 @@ Stripe is the source of truth. An event only says *which* subscription to look a
 
 ## Subscription write (compare-and-swap on `revision`)
 
-1. `begin_subscription_read` returns the stored revision `r` (0 if no row) and takes a `read_seq` from a database sequence. Events take one from the same sequence when they first arrive (`received_seq`). If the stored row's `read_seq` is greater than this event's `received_seq`, that row came from a Stripe read that began after this event arrived, so it already reflects the event: done, `skipped`, no fetch. Deleted events never take this shortcut.
+1. `begin_subscription_read` returns the stored revision `r` (0 if no row) and takes a `read_seq` from a database sequence. Events take one from the same sequence when they first arrive (`received_seq`).
+   - **Read-order shortcut (opt-in, `readOrderShortcut: true`; default off).** If the stored row's `read_seq` is greater than this event's `received_seq`, that row came from a Stripe read that began after this event arrived. The event then ends as `skipped`, with no fetch. Deleted events never take it.
+   - **Assumption:** a Stripe read that starts after an event arrived reflects that event's change. Stripe does not document this. When a read is stale, the shortcut leaves the row stale until the next event for that subscription arrives (`shortcut_on_keeps_a_stale_read_documented_risk`). With the shortcut off, the event fetches for itself (`shortcut_off_converges_after_a_stale_read`).
 2. Fetch the subscription from Stripe. No database transaction is open during the call.
 3. `apply_subscription_snapshot(subscription_id, r, token, event_id, snapshot)` runs one short transaction:
    a. lock the event row; if `claimed_by <> token` or status is not `processing`, return `claim_lost`;
    b. `INSERT ... ON CONFLICT (subscription_id) DO UPDATE ... WHERE revision = r AND tombstoned_at IS NULL AND user_id = <snapshot user>`, writing revision `r + 1` and this read's `read_seq`;
    c. if no row was written, return `tombstoned`, `user_mismatch` or `conflict`. Nothing is written in any of these cases.
-4. `conflict`: go back to step 1. The writer that won usually read Stripe after this event arrived, so step 1 then ends it as `skipped`. At most 5 retries (6 attempts) with 10–50 ms jitter. Exhausted: event `failed`, 500, Stripe retries.
+4. `conflict`: go back to step 1 and fetch again (with the shortcut on, step 1 usually ends it as `skipped` instead). At most 5 retries (6 attempts) with 10–50 ms jitter. Exhausted: event `failed`, 500, Stripe retries.
 5. Rows are never physically deleted. A snapshot with a terminal status (`canceled`, `incomplete_expired`) sets `tombstoned_at` and keeps its revision. Later snapshots for that row are refused (`tombstoned`, event `skipped`), so a delayed worker or a stale read cannot bring it back.
 6. For `customer.subscription.deleted`, a fetch that does not yet show a terminal status fails the event so Stripe retries, instead of writing a non-terminal state.
 

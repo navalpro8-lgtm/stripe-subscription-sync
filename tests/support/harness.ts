@@ -85,6 +85,7 @@ export interface WorkerOptions {
   users?: UserResolver;
   enabledEvents?: readonly ImplementedEvent[];
   wrapStore?: (store: SyncStore) => SyncStore;
+  readOrderShortcut?: boolean;
 }
 
 /** One "worker": a route handler with its own DB connection. */
@@ -93,7 +94,7 @@ export function worker(o: WorkerOptions) {
   const handler = createNextWebhookHandler({
     stripe: stripeSdk,
     webhookSecret: WEBHOOK_SECRET,
-    sync: { store, stripe: o.fake, users: o.users, enabledEvents: o.enabledEvents },
+    sync: { store, stripe: o.fake, users: o.users, enabledEvents: o.enabledEvents, readOrderShortcut: o.readOrderShortcut },
   });
   return {
     store,

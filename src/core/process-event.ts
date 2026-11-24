@@ -7,7 +7,8 @@
 // Not configurable on purpose: claims and takeover, the revision check, first-insert handling,
 // tombstones, the retry count and the status transitions. See README "What NOT to touch".
 import { defaultUserResolver } from '../config/user-mapping.js';
-import { resolveEnabledEvents, type ImplementedEvent } from '../config/events.js';
+import type { ImplementedEvent } from '../config/events.js';
+import { resolveOptions, type ResolvedOptions } from '../config/options.js';
 import { ClaimLostError, MappingError, MissingFieldError } from './errors.js';
 import type {
   CheckoutSessionLike,
@@ -29,6 +30,7 @@ interface Context {
   event: StripeEventLike;
   token: string;
   deps: SyncDeps;
+  options: ResolvedOptions;
   users: UserResolver;
 }
 
@@ -51,7 +53,7 @@ const HANDLERS: Record<ImplementedEvent, Handler> = {
  * (Stripe will redeliver). Database errors are thrown; answer 500 for those too.
  */
 export async function processEvent(event: StripeEventLike, deps: SyncDeps): Promise<ProcessResult> {
-  const enabled = resolveEnabledEvents(deps.enabledEvents);
+  const options = resolveOptions(deps);
   const log = deps.logger ?? {};
   const token = globalThis.crypto.randomUUID();
   const fields = { eventId: event.id, eventType: event.type };
@@ -66,8 +68,9 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
   let status: FinalStatus;
   let error: string | null = null;
   try {
-    const handler = enabled.has(event.type as ImplementedEvent) ? HANDLERS[event.type as ImplementedEvent] : undefined;
-    status = handler ? await handler({ event, token, deps, users: deps.users ?? defaultUserResolver }) : 'ignored';
+    const type = event.type as ImplementedEvent;
+    const handler = options.enabled.has(type) ? HANDLERS[type] : undefined;
+    status = handler ? await handler({ event, token, deps, options, users: deps.users ?? defaultUserResolver }) : 'ignored';
   } catch (err) {
     if (err instanceof ClaimLostError) {
       log.warn?.(err.message, fields);
@@ -96,10 +99,10 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     if (attempt > 0) await sleep(10 + Math.random() * 40);
 
     const read = await store.beginRead(subscriptionId, c.event.id);
-    // The stored row came from a Stripe read that started after this event arrived, so it already
-    // reflects this event's change: nothing to fetch or write. After a conflict this is usually
-    // why. Deletions still insist on seeing a terminal status themselves.
-    if (read.superseded && !mustBeTerminal) {
+    // Opt-in read-order shortcut (SyncDeps.readOrderShortcut). The stored row came from a Stripe
+    // read that started after this event arrived; ASSUMING that read reflects this event's change,
+    // there is nothing to fetch or write. Deletions still insist on seeing a terminal status.
+    if (c.options.readOrderShortcut && read.superseded && !mustBeTerminal) {
       logger?.info?.('a later Stripe read already covers this event', { subscriptionId, eventId: c.event.id });
       return 'skipped';
     }

@@ -14,12 +14,19 @@ export interface Hold {
 export class FakeStripe implements SubscriptionRetriever {
   private readonly subscriptions = new Map<string, Record<string, unknown>>();
   private readonly holds = new Map<string, Array<{ hold: Hold; markReached: () => void; released: Promise<void> }>>();
+  private readonly stale = new Map<string, Array<Record<string, unknown>>>();
   readonly calls: string[] = [];
   /** Runs after the state is read and before the call returns (used to inject concurrent writes). */
   afterRead?: (id: string) => Promise<void>;
 
   set(subscription: Record<string, unknown>): void {
     this.subscriptions.set(String(subscription.id), structuredClone(subscription));
+  }
+
+  /** The next retrieve of `id` returns `snapshot` instead of the current state: a stale read. */
+  serveStale(snapshot: Record<string, unknown>): void {
+    const id = String(snapshot.id);
+    this.stale.set(id, [...(this.stale.get(id) ?? []), structuredClone(snapshot)]);
   }
 
   /** The next retrieve of `id` reads the state, then waits until release() is called. */
@@ -37,7 +44,7 @@ export class FakeStripe implements SubscriptionRetriever {
     this.calls.push(id);
     const stored = this.subscriptions.get(id);
     if (!stored) throw new Error(`FakeStripe: no such subscription ${id}`);
-    const copy = structuredClone(stored);
+    const copy = this.stale.get(id)?.shift() ?? structuredClone(stored);
     await this.afterRead?.(id);
     const pending = this.holds.get(id)?.shift();
     if (pending) {
