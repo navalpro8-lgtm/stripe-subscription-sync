@@ -149,6 +149,7 @@ Every test except the policy unit tests asserts database state, against a real P
 | Every subscription item is stored; an item without a product fails without writing | `multi_item_subscription_stores_every_item`, `incomplete_item_list_fails_without_state_change` |
 | An embedded item list with `has_more` is paged through (`subscriptionItems.list` in `fromStripeSdk`); a failure on any page fails the event and writes nothing; without a pager, `has_more` fails the event | `item_list_is_paged_when_has_more`, `failure_on_a_later_item_page_fails_without_writing`, `incomplete_item_list_fails_without_state_change`, `stripe_adapter_pages_items_with_subscription_items_list` |
 | Plan changes and cancel-at-period-end are reflected | `downgrade_and_cancellation` |
+| A v0.1.0 database upgraded with `sql/migrations/0002` ends identical to a fresh install (plain Postgres) | `upgrade_from_v0_1_0_matches_a_fresh_install` |
 | Reconcile repairs drift, respects tombstones, and is safe alongside a live event in either commit order | `reconcile_repairs_drift`, `reconcile_respects_tombstone`, `reconcile_concurrent_with_live_event_webhook_commits_first`, `reconcile_concurrent_with_live_event_reconcile_commits_first` |
 | Reconcile failures are typed results and write nothing; `reconcileCustomer` pages and reports truncation | `reconcile_returns_typed_failures_without_writing`, `reconcile_customer_pages_through_subscriptions` |
 | Secrets, keys, JWTs and emails in payloads or error messages never reach logs or `last_error` | `canaries_never_reach_logs_or_last_error` |
@@ -263,4 +264,4 @@ The run went through these steps:
 
 ## Docs
 
-[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [docs/RUNBOOK.md](docs/RUNBOOK.md) · [docs/RETENTION.md](docs/RETENTION.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
+[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [docs/RUNBOOK.md](docs/RUNBOOK.md) · [docs/RETENTION.md](docs/RETENTION.md) · [docs/UPGRADING.md](docs/UPGRADING.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
