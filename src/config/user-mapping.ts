@@ -9,7 +9,7 @@
 //
 // Missing or invalid mapping is an error: the event fails and Stripe retries it. Replace this file
 // (or pass your own UserResolver) if your users map to customers some other way.
-import { MappingError } from '../core/errors.js';
+import { UnlinkedCustomerError } from '../core/errors.js';
 import type { CheckoutSessionLike, UserResolver } from '../core/types.js';
 
 const MAX_USER_ID_LENGTH = 255;
@@ -28,10 +28,7 @@ export const defaultUserResolver: UserResolver = {
   async userForSubscription(subscription, store) {
     const userId = await store.findUserByCustomer(subscription.customerId);
     if (!isValidUserId(userId)) {
-      throw new MappingError(
-        `No user linked to customer ${subscription.customerId} (subscription ${subscription.id}); ` +
-          'waiting for checkout.session.completed',
-      );
+      throw new UnlinkedCustomerError(subscription.customerId, subscription.id);
     }
     return userId;
   },

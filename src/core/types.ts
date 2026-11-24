@@ -94,6 +94,12 @@ export interface SubscriptionRetriever {
    * embedded item list has `has_more: true`. Without it, such a subscription fails the event.
    */
   listSubscriptionItems?(subscriptionId: string, startingAfter: string): Promise<unknown>;
+  /**
+   * Optional, used only by reconcileCustomer(). One page of the customer's subscriptions, every
+   * status, after `startingAfter` (a subscription id; absent for the first page), as a Stripe
+   * list object (`{ data: [{ id, ... }], has_more }`).
+   */
+  listCustomerSubscriptions?(customerId: string, startingAfter?: string): Promise<unknown>;
 }
 
 export type ClaimResult = 'claimed' | 'done' | 'busy';

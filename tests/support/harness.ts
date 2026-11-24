@@ -8,6 +8,8 @@ import {
   postgresStore,
   supabaseStore,
   type ImplementedEvent,
+  type Logger,
+  type SyncDeps,
   type SyncStore,
   type UserResolver,
 } from '../../src/index.js';
@@ -89,26 +91,31 @@ export interface WorkerOptions {
   /** Default false: the harness serves test mode, like the builders' events. */
   livemode?: boolean;
   claimTimeoutSeconds?: number;
+  logger?: Logger;
+  maxBodyBytes?: number;
+}
+
+/** The SyncDeps a worker uses (also handy for calling reconcileSubscription directly). */
+export function syncDeps(o: WorkerOptions): SyncDeps {
+  return {
+    livemode: o.livemode ?? false,
+    store: (o.wrapStore ?? ((s) => s))(storeFor(o.adapter, o.client)),
+    stripe: o.fake,
+    users: o.users,
+    enabledEvents: o.enabledEvents,
+    readOrderShortcut: o.readOrderShortcut,
+    claimTimeoutSeconds: o.claimTimeoutSeconds,
+    logger: o.logger,
+  };
 }
 
 /** One "worker": a route handler with its own DB connection. */
 export function worker(o: WorkerOptions) {
-  const store = (o.wrapStore ?? ((s) => s))(storeFor(o.adapter, o.client));
-  const handler = createNextWebhookHandler({
-    stripe: stripeSdk,
-    webhookSecret: WEBHOOK_SECRET,
-    sync: {
-      livemode: o.livemode ?? false,
-      store,
-      stripe: o.fake,
-      users: o.users,
-      enabledEvents: o.enabledEvents,
-      readOrderShortcut: o.readOrderShortcut,
-      claimTimeoutSeconds: o.claimTimeoutSeconds,
-    },
-  });
+  const sync = syncDeps(o);
+  const handler = createNextWebhookHandler({ stripe: stripeSdk, webhookSecret: WEBHOOK_SECRET, sync, maxBodyBytes: o.maxBodyBytes });
   return {
-    store,
+    store: sync.store,
+    handler,
     async deliver(evt: object, sign: { secret?: string; tamper?: boolean; omitHeader?: boolean } = {}) {
       const payload = JSON.stringify(evt);
       const header = stripeSdk.webhooks.generateTestHeaderString({ payload, secret: sign.secret ?? WEBHOOK_SECRET });

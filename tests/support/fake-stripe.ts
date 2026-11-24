@@ -18,6 +18,10 @@ export class FakeStripe implements SubscriptionRetriever {
   readonly calls: string[] = [];
   /** Set by pageItems(): the item pager. Absent by default, like a retriever without one. */
   listSubscriptionItems?: (subscriptionId: string, startingAfter: string) => Promise<unknown>;
+  /** Set by pageCustomerSubscriptions(): the customer-subscription lister used by reconcileCustomer. */
+  listCustomerSubscriptions?: (customerId: string, startingAfter?: string) => Promise<unknown>;
+  /** The next retrieve (of any id) throws this instead of reading. */
+  failNextRetrieve?: unknown;
   /** Runs after the state is read and before the call returns (used to inject concurrent writes). */
   afterRead?: (id: string) => Promise<void>;
 
@@ -41,6 +45,18 @@ export class FakeStripe implements SubscriptionRetriever {
     };
   }
 
+  /** Lists stored subscriptions by customer, in id order, `pageSize` at a time. */
+  pageCustomerSubscriptions(pageSize: number): void {
+    this.listCustomerSubscriptions = async (customerId, startingAfter) => {
+      this.calls.push(`list:${customerId}:${startingAfter ?? ''}`);
+      const all = [...this.subscriptions.values()]
+        .filter((s) => s.customer === customerId)
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      const start = startingAfter === undefined ? 0 : all.findIndex((s) => s.id === startingAfter) + 1;
+      return { object: 'list', data: structuredClone(all.slice(start, start + pageSize)), has_more: start + pageSize < all.length };
+    };
+  }
+
   /** The next retrieve of `id` returns `snapshot` instead of the current state: a stale read. */
   serveStale(snapshot: Record<string, unknown>): void {
     const id = String(snapshot.id);
@@ -60,8 +76,14 @@ export class FakeStripe implements SubscriptionRetriever {
 
   async retrieveSubscription(id: string): Promise<unknown> {
     this.calls.push(id);
+    if (this.failNextRetrieve !== undefined) {
+      const err = this.failNextRetrieve;
+      this.failNextRetrieve = undefined;
+      throw err;
+    }
     const stored = this.subscriptions.get(id);
-    if (!stored) throw new Error(`FakeStripe: no such subscription ${id}`);
+    // Shaped like the Stripe SDK's StripeInvalidRequestError for a missing object.
+    if (!stored) throw Object.assign(new Error(`No such subscription: '${id}'`), { statusCode: 404, code: 'resource_missing' });
     const copy = this.stale.get(id)?.shift() ?? structuredClone(stored);
     await this.afterRead?.(id);
     const pending = this.holds.get(id)?.shift();

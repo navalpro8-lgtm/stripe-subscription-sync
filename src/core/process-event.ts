@@ -9,11 +9,20 @@
 import { defaultUserResolver } from '../config/user-mapping.js';
 import type { ImplementedEvent } from '../config/events.js';
 import { resolveOptions, type ResolvedOptions } from '../config/options.js';
-import { ClaimLostError, MappingError, MissingFieldError } from './errors.js';
+import {
+  ClaimLostError,
+  ConflictRetriesExhaustedError,
+  MappingError,
+  MissingFieldError,
+  ModeMismatchError,
+  OwnerMismatchError,
+} from './errors.js';
+import { errorMessage, redactFields } from './redact.js';
 import type {
   CheckoutSessionLike,
   SubscriptionRetriever,
   FinalStatus,
+  Logger,
   ProcessResult,
   Snapshot,
   StripeEventLike,
@@ -30,52 +39,86 @@ const MAX_ITEM_PAGES = 100;
 /** Stripe statuses a subscription never leaves. A row in one of these is a tombstone. */
 const TERMINAL_STATUSES = new Set(['canceled', 'incomplete_expired']);
 
-interface Context {
+/** @internal Shared with reconcile.ts. */
+export interface Context {
   event: StripeEventLike;
   token: string;
   deps: SyncDeps;
   options: ResolvedOptions;
   users: UserResolver;
+  log: StructuredLog;
+  /** Stripe reads (compare-and-swap attempts) made so far in this delivery. */
+  attempts: number;
 }
+
+/** @internal What one compare-and-swap loop ended with. */
+export type SyncOutcome = 'applied' | 'tombstoned' | 'covered';
 
 type Handler = (c: Context) => Promise<'succeeded' | 'skipped'>;
 
+const asStatus = (o: SyncOutcome): 'succeeded' | 'skipped' => (o === 'applied' ? 'succeeded' : 'skipped');
+
 const HANDLERS: Record<ImplementedEvent, Handler> = {
-  'customer.subscription.created': (c) => syncSubscription(c, subscriptionIdFromEvent(c.event), false),
-  'customer.subscription.updated': (c) => syncSubscription(c, subscriptionIdFromEvent(c.event), false),
-  'customer.subscription.deleted': (c) => syncSubscription(c, subscriptionIdFromEvent(c.event), true),
+  'customer.subscription.created': async (c) => asStatus(await syncSubscription(c, subscriptionIdFromEvent(c.event), { mustBeTerminal: false })),
+  'customer.subscription.updated': async (c) => asStatus(await syncSubscription(c, subscriptionIdFromEvent(c.event), { mustBeTerminal: false })),
+  'customer.subscription.deleted': async (c) => asStatus(await syncSubscription(c, subscriptionIdFromEvent(c.event), { mustBeTerminal: true })),
   'invoice.paid': syncFromInvoice,
   'invoice.payment_failed': syncFromInvoice,
   'checkout.session.completed': linkFromCheckout,
 };
 
+// ---------------------------------------------------------------- structured, redacted logging
+
+/**
+ * @internal Every log line goes through here: a stable `event` name plus fields, all string
+ * values redacted. Fields are ids, types, outcomes and counts; payloads are never logged.
+ */
+export interface StructuredLog {
+  info(event: string, fields: Record<string, unknown>): void;
+  warn(event: string, fields: Record<string, unknown>): void;
+  error(event: string, fields: Record<string, unknown>): void;
+}
+
+/** @internal */
+export function structuredLog(logger: Logger | undefined, correlationId: string): StructuredLog {
+  const emit = (level: 'info' | 'warn' | 'error') => (event: string, fields: Record<string, unknown>) =>
+    logger?.[level]?.(event, redactFields({ event, correlationId, ...fields }));
+  return { info: emit('info'), warn: emit('warn'), error: emit('error') };
+}
+
 // ---------------------------------------------------------------- entry point
 
 /**
  * Processes one verified Stripe event and says which HTTP status to answer with:
- * 200 done (or duplicate / ignored / skipped), 409 another worker is processing it, 500 failed
- * (Stripe will redeliver). Database errors are thrown; answer 500 for those too.
+ * 200 done (or duplicate / ignored / skipped), 400 event from the other Stripe mode, 409 another
+ * worker is processing it, 500 failed (Stripe will redeliver). Database errors are thrown; answer
+ * 500 for those too.
  */
 export async function processEvent(event: StripeEventLike, deps: SyncDeps): Promise<ProcessResult> {
   const options = resolveOptions(deps);
-  const log = deps.logger ?? {};
+  const correlationId = globalThis.crypto.randomUUID();
+  const log = structuredLog(deps.logger, correlationId);
   const token = globalThis.crypto.randomUUID();
+  const started = Date.now();
   const fields = { eventId: event.id, eventType: event.type };
+  const done = (result: ProcessResult, attempts: number, error?: string): ProcessResult => {
+    const line = { ...fields, outcome: result.outcome, httpStatus: result.httpStatus, attempts, durationMs: Date.now() - started, ...(error && { error }) };
+    if (result.httpStatus >= 500 || result.httpStatus === 400) log.error('stripe_sync.event', line);
+    else log.info('stripe_sync.event', line);
+    return result;
+  };
 
   // Mode first: an event from the other Stripe mode means this endpoint is misconfigured. Nothing
   // is recorded; the 400 makes Stripe's retries visible in its Dashboard.
   if (event.livemode !== options.livemode) {
-    log.error?.('event livemode does not match SyncDeps.livemode; nothing written', { ...fields, eventLivemode: event.livemode ?? null });
-    return { httpStatus: 400, outcome: 'livemode_mismatch' };
+    return done({ httpStatus: 400, outcome: 'livemode_mismatch' }, 0, `event livemode=${String(event.livemode)}, endpoint expects ${options.livemode}`);
   }
 
   const claim = await deps.store.claimEvent(event.id, event.type, token, options.livemode, options.claimTimeoutSeconds);
-  if (claim === 'done') return { httpStatus: 200, outcome: 'duplicate' };
-  if (claim === 'busy') {
-    log.info?.('event is being processed by another worker', fields);
-    return { httpStatus: 409, outcome: 'busy' };
-  }
+  if (claim === 'done') return done({ httpStatus: 200, outcome: 'duplicate' }, 0);
+  if (claim === 'busy') return done({ httpStatus: 409, outcome: 'busy' }, 0);
 
+  const c: Context = { event, token, deps, options, users: deps.users ?? defaultUserResolver, log, attempts: 0 };
   let status: FinalStatus;
   let error: string | null = null;
   try {
@@ -86,31 +129,33 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
       status = 'ignored';
       error = 'connect_event_unsupported';
     } else {
-      status = handler ? await handler({ event, token, deps, options, users: deps.users ?? defaultUserResolver }) : 'ignored';
+      status = handler ? await handler(c) : 'ignored';
     }
   } catch (err) {
-    if (err instanceof ClaimLostError) {
-      log.warn?.(err.message, fields);
-      return { httpStatus: 500, outcome: 'claim_lost' };
-    }
+    if (err instanceof ClaimLostError) return done({ httpStatus: 500, outcome: 'claim_lost' }, c.attempts);
     status = 'failed';
-    error = err instanceof Error ? err.message : String(err);
-    log.error?.('event failed; Stripe will retry', { ...fields, error });
+    error = `${errorMessage(err)} [correlation ${correlationId}]`;
   }
 
   if (!(await deps.store.finishEvent(event.id, token, status, error))) {
-    log.warn?.('claim was taken over before the event could be marked', fields);
-    return { httpStatus: 500, outcome: 'claim_lost' };
+    return done({ httpStatus: 500, outcome: 'claim_lost' }, c.attempts);
   }
-  log.info?.(`event ${status}`, fields);
-  return { httpStatus: status === 'failed' ? 500 : 200, outcome: status };
+  return done({ httpStatus: status === 'failed' ? 500 : 200, outcome: status }, c.attempts, error ?? undefined);
 }
 
 // ---------------------------------------------------------------- handlers
 
-/** Compare-and-swap loop. See docs/SYNC_MODEL.md, "Subscription write". */
-async function syncSubscription(c: Context, subscriptionId: string, mustBeTerminal: boolean) {
-  const { store, stripe, logger } = c.deps;
+/**
+ * @internal Compare-and-swap loop, shared by webhooks and reconcileSubscription().
+ * See docs/SYNC_MODEL.md, "Subscription write".
+ */
+export async function syncSubscription(
+  c: Context,
+  subscriptionId: string,
+  o: { mustBeTerminal: boolean; allowShortcut?: boolean },
+): Promise<SyncOutcome> {
+  const { store, stripe } = c.deps;
+  const shortcut = c.options.readOrderShortcut && (o.allowShortcut ?? true) && !o.mustBeTerminal;
 
   for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
     if (attempt > 0) await sleep(10 + Math.random() * 40);
@@ -118,19 +163,20 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     const read = await store.beginRead(subscriptionId, c.event.id);
     // Opt-in read-order shortcut (SyncDeps.readOrderShortcut). The stored row came from a Stripe
     // read that started after this event arrived; ASSUMING that read reflects this event's change,
-    // there is nothing to fetch or write. Deletions still insist on seeing a terminal status.
-    if (c.options.readOrderShortcut && read.superseded && !mustBeTerminal) {
-      logger?.info?.('a later Stripe read already covers this event', { subscriptionId, eventId: c.event.id });
-      return 'skipped';
+    // there is nothing to fetch or write. Deletions and reconciliation never take it.
+    if (shortcut && read.superseded) {
+      c.log.info('stripe_sync.read_order_skip', { eventId: c.event.id, subscriptionId });
+      return 'covered';
     }
 
     // No transaction is open here: the Stripe call happens between two independent statements.
+    c.attempts++;
     const fetched = toSnapshot(await retrieveWithAllItems(stripe, subscriptionId), subscriptionId);
 
     if (fetched.livemode !== c.options.livemode) {
-      throw new Error(`Subscription ${subscriptionId} has livemode=${fetched.livemode}, endpoint expects ${c.options.livemode}; nothing written`);
+      throw new ModeMismatchError(`Subscription ${subscriptionId} has livemode=${fetched.livemode}, endpoint expects ${c.options.livemode}; nothing written`);
     }
-    if (mustBeTerminal && !TERMINAL_STATUSES.has(fetched.status)) {
+    if (o.mustBeTerminal && !TERMINAL_STATUSES.has(fetched.status)) {
       // A deleted event, but Stripe's read does not show it yet. Do not write a live state.
       throw new Error(`Subscription ${subscriptionId} is "${fetched.status}" in Stripe after a deleted event; retry later`);
     }
@@ -141,22 +187,22 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
 
     switch (result) {
       case 'applied':
-        return 'succeeded';
+        return 'applied';
       case 'tombstoned':
-        logger?.info?.('subscription is tombstoned; snapshot refused', { subscriptionId, eventId: c.event.id });
-        return 'skipped';
+        c.log.info('stripe_sync.tombstone_refused', { eventId: c.event.id, subscriptionId });
+        return 'tombstoned';
       case 'claim_lost':
         throw new ClaimLostError(c.event.id);
       case 'user_mismatch':
-        throw new MappingError(`Subscription ${subscriptionId} belongs to another user; refusing to change its owner`);
+        throw new OwnerMismatchError(subscriptionId);
       case 'mode_mismatch':
-        throw new Error(`Stored subscription ${subscriptionId} is from the other Stripe mode; nothing written`);
+        throw new ModeMismatchError(`Stored subscription ${subscriptionId} is from the other Stripe mode; nothing written`);
       case 'conflict':
-        logger?.info?.('revision conflict; re-reading', { subscriptionId, attempt });
+        c.log.info('stripe_sync.revision_conflict', { eventId: c.event.id, subscriptionId, attempt });
         continue;
     }
   }
-  throw new Error(`Revision conflict on subscription ${subscriptionId}: gave up after ${MAX_CONFLICT_RETRIES} retries`);
+  throw new ConflictRetriesExhaustedError(subscriptionId, MAX_CONFLICT_RETRIES);
 }
 
 /** invoice.paid / invoice.payment_failed only trigger a re-fetch of their subscription. */
@@ -166,7 +212,7 @@ async function syncFromInvoice(c: Context) {
     idOf(invoice.subscription) ?? // API versions before 2025-03-31.basil
     idOf(rec(rec(invoice.parent).subscription_details).subscription); // 2025-03-31.basil and later
   if (!subscriptionId) return 'skipped'; // e.g. a one-off invoice
-  return syncSubscription(c, subscriptionId, false);
+  return asStatus(await syncSubscription(c, subscriptionId, { mustBeTerminal: false }));
 }
 
 /** checkout.session.completed only links the session's customer to the application user. */
@@ -182,7 +228,7 @@ async function linkFromCheckout(c: Context) {
 
   const result = await c.deps.store.linkCustomer(customerId, userId, c.event.id, c.token, c.options.livemode);
   if (result === 'claim_lost') throw new ClaimLostError(c.event.id);
-  if (result === 'mode_mismatch') throw new MappingError(`Customer ${customerId} is linked in the other Stripe mode; not relinking`);
+  if (result === 'mode_mismatch') throw new ModeMismatchError(`Customer ${customerId} is linked in the other Stripe mode; not relinking`);
   if (result === 'mismatch') throw new MappingError(`Customer ${customerId} is already linked to another user; not relinking`);
   return 'succeeded';
 }

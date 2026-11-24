@@ -1,6 +1,25 @@
 // Core
 export { processEvent, toSnapshot } from './core/process-event.js';
-export { ClaimLostError, MappingError, MissingFieldError } from './core/errors.js';
+export {
+  reconcileCustomer,
+  reconcileSubscription,
+  RECONCILE_EVENT_TYPE,
+  type ReconcileCustomerOptions,
+  type ReconcileCustomerResult,
+  type ReconcileFailureReason,
+  type ReconcileResult,
+} from './core/reconcile.js';
+export {
+  ClaimLostError,
+  ConflictRetriesExhaustedError,
+  isStripeNotFound,
+  MappingError,
+  MissingFieldError,
+  ModeMismatchError,
+  OwnerMismatchError,
+  UnlinkedCustomerError,
+} from './core/errors.js';
+export { redact } from './core/redact.js';
 export type * from './core/types.js';
 
 // Extension points
@@ -10,7 +29,7 @@ export { DEFAULT_CLAIM_TIMEOUT_SECONDS, MAX_CLAIM_TIMEOUT_SECONDS, MIN_CLAIM_TIM
 export { DEFAULT_ENABLED_EVENTS, IMPLEMENTED_EVENTS, resolveEnabledEvents, type ImplementedEvent } from './config/events.js';
 
 // Adapters
-export { createNextWebhookHandler, type NextWebhookOptions, type WebhookVerifier } from './adapters/nextjs.js';
+export { createNextWebhookHandler, DEFAULT_MAX_BODY_BYTES, type NextWebhookOptions, type WebhookVerifier } from './adapters/nextjs.js';
 export { postgresStore, type QueryExecutor } from './adapters/postgres.js';
 export { supabaseStore, type RpcClient } from './adapters/supabase.js';
 export { fromStripeSdk, type StripeSubscriptionsApi } from './adapters/stripe.js';
