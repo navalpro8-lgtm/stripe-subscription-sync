@@ -16,11 +16,29 @@ export class FakeStripe implements SubscriptionRetriever {
   private readonly holds = new Map<string, Array<{ hold: Hold; markReached: () => void; released: Promise<void> }>>();
   private readonly stale = new Map<string, Array<Record<string, unknown>>>();
   readonly calls: string[] = [];
+  /** Set by pageItems(): the item pager. Absent by default, like a retriever without one. */
+  listSubscriptionItems?: (subscriptionId: string, startingAfter: string) => Promise<unknown>;
   /** Runs after the state is read and before the call returns (used to inject concurrent writes). */
   afterRead?: (id: string) => Promise<void>;
 
   set(subscription: Record<string, unknown>): void {
     this.subscriptions.set(String(subscription.id), structuredClone(subscription));
+  }
+
+  /**
+   * Serves `allItems` as Stripe's item list for `id`, `pageSize` at a time after a given item id.
+   * `failAfter`: listing after that item id throws, like a failed Stripe call.
+   */
+  pageItems(id: string, allItems: unknown[], pageSize: number, opts: { failAfter?: string } = {}): void {
+    this.listSubscriptionItems = async (subscriptionId, startingAfter) => {
+      this.calls.push(`items:${subscriptionId}:${startingAfter}`);
+      if (subscriptionId !== id) throw new Error(`FakeStripe: no item list for ${subscriptionId}`);
+      if (opts.failAfter === startingAfter) throw new Error('FakeStripe: item page request failed');
+      const start = allItems.findIndex((item) => (item as { id: string }).id === startingAfter) + 1;
+      if (start === 0) throw new Error(`FakeStripe: unknown starting_after ${startingAfter}`);
+      const data = structuredClone(allItems.slice(start, start + pageSize));
+      return { object: 'list', data, has_more: start + pageSize < allItems.length };
+    };
   }
 
   /** The next retrieve of `id` returns `snapshot` instead of the current state: a stale read. */

@@ -88,6 +88,12 @@ export interface StoredSubscription {
 /** Fetches the current subscription from Stripe. The result is parsed by toSnapshot(). */
 export interface SubscriptionRetriever {
   retrieveSubscription(id: string): Promise<unknown>;
+  /**
+   * Optional. One page of the subscription's items after `startingAfter` (an item id), as a
+   * Stripe list object (`{ data, has_more }`). Called only when the retrieved subscription's
+   * embedded item list has `has_more: true`. Without it, such a subscription fails the event.
+   */
+  listSubscriptionItems?(subscriptionId: string, startingAfter: string): Promise<unknown>;
 }
 
 export type ClaimResult = 'claimed' | 'done' | 'busy';

@@ -99,7 +99,8 @@ describe.each(ADAPTERS)('payload shapes (%s adapter)', (adapter) => {
     await w().deliver(event('customer.subscription.created', { id: 'sub_1' }));
     const before = await subscriptionRow(ctx.a);
 
-    // Stripe says the embedded item list is incomplete: refuse to write a partial picture.
+    // Stripe says the embedded item list is incomplete and this retriever cannot page:
+    // refuse to write a partial picture.
     ctx.fake.set(subscription({ price: 'price_b', itemsHasMore: true }));
     const truncated = event('customer.subscription.updated', { id: 'sub_1' });
     expect((await w().deliver(truncated)).status).toBe(500);
@@ -112,6 +113,53 @@ describe.each(ADAPTERS)('payload shapes (%s adapter)', (adapter) => {
     expect(String((await eventRow(ctx.a, noProduct.id))?.last_error)).toMatch(/items\.data\[1\]/);
 
     expect(await subscriptionRow(ctx.a)).toEqual(before);
+  });
+
+  /** sub_1 with 6 items; Stripe embeds the first 2 (has_more) and pages the rest 2 at a time. */
+  function pagedSubscription(price: string, opts: { failAfter?: string } = {}) {
+    const full = subscription({
+      price,
+      extraItems: [2, 3, 4, 5, 6].map((n) => ({ price: `price_addon_${n}`, product: `prod_addon_${n}`, quantity: n })),
+    });
+    const allItems = (full.items as { data: unknown[] }).data;
+    ctx.fake.set({ ...full, items: { object: 'list', has_more: true, data: allItems.slice(0, 2) } });
+    ctx.fake.pageItems('sub_1', allItems, 2, opts);
+    return allItems.map((i) => (i as { id: string }).id);
+  }
+
+  test('item_list_is_paged_when_has_more', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    const ids = pagedSubscription('price_base');
+    const r = await w().deliver(event('customer.subscription.created', { id: 'sub_1' }));
+    expect(r).toMatchObject({ status: 200, body: { outcome: 'succeeded' } });
+
+    const row = await subscriptionRow(ctx.a);
+    expect((row?.items as Array<{ id: string }>).map((i) => i.id)).toEqual(ids); // all 6, in Stripe's order
+    expect(row).toMatchObject({ price_id: 'price_base' });
+    expect((row?.items as Array<{ quantity: number }>)[5]).toMatchObject({ product_id: 'prod_addon_6', quantity: 6 });
+    // One retrieve, then two more pages: after the 2nd item and after the 4th.
+    expect(ctx.fake.calls).toEqual(['sub_1', `items:sub_1:${ids[1]}`, `items:sub_1:${ids[3]}`]);
+  });
+
+  test('failure_on_a_later_item_page_fails_without_writing', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription({ price: 'price_a' }));
+    await w().deliver(event('customer.subscription.created', { id: 'sub_1' }));
+    const before = await subscriptionRow(ctx.a);
+
+    // Page 1 succeeds, page 2 (after the 4th item) fails.
+    const ids = pagedSubscription('price_b', { failAfter: 'si_sub_1_4' });
+    const updated = event('customer.subscription.updated', { id: 'sub_1' });
+    expect(await w().deliver(updated)).toMatchObject({ status: 500, body: { outcome: 'failed' } });
+    expect(String((await eventRow(ctx.a, updated.id))?.last_error)).toMatch(/item page request failed/);
+    expect(await subscriptionRow(ctx.a)).toEqual(before);
+
+    // Stripe redelivers once the page works: everything is written.
+    pagedSubscription('price_b');
+    expect((await w().deliver(updated)).status).toBe(200);
+    const row = await subscriptionRow(ctx.a);
+    expect(row).toMatchObject({ price_id: 'price_b', revision: 2 });
+    expect((row?.items as Array<{ id: string }>).map((i) => i.id)).toEqual(ids);
   });
 
   test('missing_required_field_fails_without_state_change_then_retry_succeeds', async () => {

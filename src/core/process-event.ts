@@ -12,6 +12,7 @@ import { resolveOptions, type ResolvedOptions } from '../config/options.js';
 import { ClaimLostError, MappingError, MissingFieldError } from './errors.js';
 import type {
   CheckoutSessionLike,
+  SubscriptionRetriever,
   FinalStatus,
   ProcessResult,
   Snapshot,
@@ -22,6 +23,9 @@ import type {
 
 /** Retries after a revision conflict (so up to 6 attempts in total). */
 const MAX_CONFLICT_RETRIES = 5;
+
+/** Upper bound on item pages fetched for one subscription read, against a list that never ends. */
+const MAX_ITEM_PAGES = 100;
 
 /** Stripe statuses a subscription never leaves. A row in one of these is a tombstone. */
 const TERMINAL_STATUSES = new Set(['canceled', 'incomplete_expired']);
@@ -121,7 +125,7 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     }
 
     // No transaction is open here: the Stripe call happens between two independent statements.
-    const fetched = toSnapshot(await stripe.retrieveSubscription(subscriptionId), subscriptionId);
+    const fetched = toSnapshot(await retrieveWithAllItems(stripe, subscriptionId), subscriptionId);
 
     if (fetched.livemode !== c.options.livemode) {
       throw new Error(`Subscription ${subscriptionId} has livemode=${fetched.livemode}, endpoint expects ${c.options.livemode}; nothing written`);
@@ -181,6 +185,32 @@ async function linkFromCheckout(c: Context) {
   if (result === 'mode_mismatch') throw new MappingError(`Customer ${customerId} is linked in the other Stripe mode; not relinking`);
   if (result === 'mismatch') throw new MappingError(`Customer ${customerId} is already linked to another user; not relinking`);
   return 'succeeded';
+}
+
+/**
+ * Retrieves the subscription and, if its embedded item list is incomplete (`has_more`) and the
+ * retriever can list items, pages through the rest. Any page failing fails the whole read, so
+ * nothing partial is written. The pages are separate Stripe reads: an item change between them
+ * can produce a mixed list, which the next event for the subscription repairs.
+ */
+async function retrieveWithAllItems(stripe: SubscriptionRetriever, subscriptionId: string): Promise<unknown> {
+  const raw = await stripe.retrieveSubscription(subscriptionId);
+  const sub = rec(raw);
+  const list = rec(sub.items);
+  if (list.has_more !== true || !stripe.listSubscriptionItems) return raw; // toSnapshot refuses has_more
+
+  const items = Array.isArray(list.data) ? [...(list.data as unknown[])] : [];
+  for (let page = 1, hasMore = true; hasMore; page++) {
+    if (page > MAX_ITEM_PAGES) throw new Error(`Subscription ${subscriptionId}: more than ${MAX_ITEM_PAGES} item pages; refusing`);
+    const after = str(rec(items.at(-1)).id);
+    if (!after) throw new MissingFieldError(`items.data[${items.length - 1}].id`, `subscription ${subscriptionId}`);
+    const next = rec(await stripe.listSubscriptionItems(subscriptionId, after));
+    const data = Array.isArray(next.data) ? (next.data as unknown[]) : [];
+    hasMore = next.has_more === true;
+    if (data.length === 0 && hasMore) throw new Error(`Subscription ${subscriptionId}: empty item page with has_more; refusing`);
+    items.push(...data);
+  }
+  return { ...sub, items: { ...list, data: items, has_more: false } };
 }
 
 // ---------------------------------------------------------------- payload mapping
