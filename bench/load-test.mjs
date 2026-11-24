@@ -39,6 +39,7 @@ if (process.argv[2] === '--server') {
   const { createNextWebhookHandler, postgresStore } = await import('../dist/index.js');
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
   const state = new Map(); // subscription id -> current Stripe state
+  let inflight = 0;
   const retriever = {
     async retrieveSubscription(id) {
       const s = structuredClone(state.get(id));
@@ -53,6 +54,10 @@ if (process.argv[2] === '--server') {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
+      if (req.url === '/inflight') { // test control: webhook requests still being handled
+        res.end(String(inflight));
+        return;
+      }
       if (req.url === '/stripe-state') { // test control: set Stripe-side state
         for (const s of JSON.parse(body)) state.set(s.id, s);
         res.end('ok');
@@ -60,9 +65,14 @@ if (process.argv[2] === '--server') {
       }
       const headers = { 'content-type': 'application/json' };
       if (req.headers['stripe-signature']) headers['stripe-signature'] = req.headers['stripe-signature'];
-      const r = await handler(new Request('http://localhost/webhook', { method: 'POST', headers, body }));
-      res.writeHead(r.status, { 'content-type': 'application/json' });
-      res.end(await r.text());
+      inflight++;
+      try {
+        const r = await handler(new Request('http://localhost/webhook', { method: 'POST', headers, body }));
+        res.writeHead(r.status, { 'content-type': 'application/json' });
+        res.end(await r.text());
+      } finally {
+        inflight--;
+      }
     });
   }).listen(Number(process.env.PORT), '127.0.0.1', () => process.send?.('ready'));
 } else {
@@ -115,19 +125,17 @@ async function scenarios(base, client, mode, results) {
   const run = async (name, opts, subIds, mutate) => {
     const r = await autocannon({ url: `${base}/webhook`, connections: 100, duration: 10, method: 'POST', ...opts });
     // Settle: one more serial event per subscription, so each row must end at Stripe's state.
+    // Requests still in flight when autocannon stops keep running server-side. Wait (up to 30 s)
+    // until the server has finished them, so they cannot leak into the settle step or the next
+    // scenario. Anything still 'processing' afterwards is reported as stuck.
+    const drainMs = await waitIdle(base);
     if (mutate) await mutate();
+    const settle = [];
     for (const id of subIds) {
       const { payload, headers } = sign(event(`evt_settle_${mode}_${name}_${id}`, 'customer.subscription.updated', id));
-      await fetch(`${base}/webhook`, { method: 'POST', headers, body: payload });
+      settle.push((await (await fetch(`${base}/webhook`, { method: 'POST', headers, body: payload })).json()).outcome);
     }
-    // Requests still in flight when autocannon stops keep running server-side; give them up to
-    // 5 s to finish. Anything still 'processing' after that is reported as stuck.
-    const waitStart = Date.now();
-    while (Date.now() - waitStart < 5000) {
-      const n = (await client.query(`select count(*)::int n from stripe_events where status = 'processing'`)).rows[0].n;
-      if (n === 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    await waitIdle(base);
     const ev = (await client.query(`select status, count(*)::int n from stripe_events group by 1 order by 1`)).rows;
     const subs = (await client.query(`select subscription_id, price_id, revision from stripe_subscriptions order by 1`)).rows;
     const succeededSubEvents = (await client.query(
@@ -145,6 +153,8 @@ async function scenarios(base, client, mode, results) {
       subscriptions: subs.length,
       invariant_oneWritePerSucceededEvent: { succeededSubEvents, sumRevisions, ok: succeededSubEvents === sumRevisions },
       stuckProcessing: ev.find((e) => e.status === 'processing')?.n ?? 0,
+      drainMs,
+      settleOutcomes: Object.fromEntries([...new Set(settle)].map((o) => [o, settle.filter((x) => x === o).length])),
     });
     return subs;
   };
@@ -160,14 +170,19 @@ async function scenarios(base, client, mode, results) {
   let price = 0;
   await setStripe([subscription('sub_hot', 'price_0')]);
   let seqB = 0;
+  const pendingB = [];
   const subsB = await run('B_hot_subscription', {
     requests: [{ setupRequest: (req) => {
-      if (++seqB % 200 === 0) setStripe([subscription('sub_hot', `price_${++price}`)]);
+      // Not awaited (setupRequest is synchronous); collected so the settle step can wait for them.
+      if (++seqB % 200 === 0) pendingB.push(setStripe([subscription('sub_hot', `price_${++price}`)]));
       const { payload, headers } = sign(event(`evt_b_${mode}_${seqB}`, 'customer.subscription.updated', 'sub_hot'));
       return { ...req, method: 'POST', body: payload, headers };
     } }],
-  }, ['sub_hot'], () => setStripe([subscription('sub_hot', 'price_final')]));
-  results.at(-1).finalRowMatchesStripe = subsB[0]?.price_id === 'price_final';
+  }, ['sub_hot'], async () => {
+    await Promise.all(pendingB); // a late state change must not land after price_final
+    await setStripe([subscription('sub_hot', 'price_final')]);
+  });
+  results.at(-1).finalRowMatchesStripe = subsB.length === 1 && subsB[0].price_id === 'price_final';
 
   // C) Spread: distinct events over 50 subscriptions.
   await reset();
@@ -182,6 +197,15 @@ async function scenarios(base, client, mode, results) {
     } }],
   }, ids, () => setStripe(ids.map((id) => subscription(id, 'price_final'))));
   results.at(-1).finalRowsMatchStripe = subsC.length === 50 && subsC.every((s) => s.price_id === 'price_final');
+}
+
+async function waitIdle(base) {
+  const start = Date.now();
+  while (Date.now() - start < 30_000) {
+    if ((await (await fetch(`${base}/inflight`)).text()) === '0') return Date.now() - start;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('server still busy after 30 s');
 }
 
 function freePort() {

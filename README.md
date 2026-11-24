@@ -141,23 +141,36 @@ By default the tests download nothing extra at run time. They start a throwaway 
 
 To use your own server instead, set `DATABASE_URL`, for example with `docker compose up -d` and `DATABASE_URL=postgres://postgres:postgres@localhost:54329/sss_test`. The tests drop and recreate the `public` schema, so they refuse any database whose name does not contain `test`. No Stripe account is needed: signatures use the real Stripe SDK with a fake secret, and retrieval uses an in-memory [FakeStripe](tests/support/fake-stripe.ts) whose delays the tests control.
 
-### Load test (optional, local only)
+### Load test (optional, local only, synthetic)
 
-[bench/load-test.mjs](bench/load-test.mjs) sends 100 concurrent connections for 10 s at the webhook handler. It uses a throwaway embedded Postgres, a fake Stripe that takes 20–80 ms per read, and events signed with a local secret. It then checks the database: every event that wrote did so exactly once, each row ends at Stripe's state, and nothing is left `processing`.
+[bench/load-test.mjs](bench/load-test.mjs) is **synthetic**. It sends 100 concurrent connections for 10 s at the webhook handler, using a throwaway embedded Postgres, a fake Stripe that takes 20–80 ms per read and is never stale, and events signed with a local secret. It runs every scenario twice: with the read-order shortcut off (the default) and on.
+
+After each scenario it waits for the server to finish in-flight requests, sends one more event per subscription, and checks the database:
+
+- every event that wrote did so exactly once;
+- each row ends at Stripe's state;
+- nothing is left `processing`.
 
 ```sh
 npm run build && npm i --no-save autocannon@8.0.0 && node bench/load-test.mjs
 ```
 
-Results on this Windows laptop, 2026-11-23, after the read-order shortcut was added. Every database check held, and no event was left `processing` after in-flight requests finished.
+Results on this Windows laptop, 2026-11-24, from the first of two runs; the second run was within about 10%. In both runs every database check held in every scenario and mode, and no event was left `processing`.
 
-| Scenario | Requests in 10 s | Throughput | Latency p50 / p99 | Outcome |
-|---|---|---|---|---|
-| Same event from 100 connections | ~21,000 | ~2,000/s | ~47 / 125 ms | applied once; the rest 200 or 409 |
-| 100 connections, distinct events, one subscription | ~8,500 | ~850/s | ~114 / 230 ms | 0 failed (before the shortcut: 207/s and 86% failed after retries) |
-| Distinct events over 50 subscriptions | ~8,600 | ~860/s | ~96 / 260 ms | 0 failed (before: 278 failed) |
+| Scenario | Shortcut | Requests in 10 s | Throughput | Latency p50 / p99 | Event outcomes |
+|---|---|---|---|---|---|
+| Same event from 100 connections | off | 20,786 | 1,890/s | 49 / 131 ms | applied once; the rest 200 (duplicate) or 409 (busy) |
+| | on | 18,964 | 1,897/s | 49 / 148 ms | same |
+| Distinct events, one subscription | off | 2,033 | 203/s | 505 / 674 ms | 299 succeeded, 1,835 `failed` after 5 retries (500, Stripe would redeliver) |
+| | on | 7,860 | 786/s | 124 / 235 ms | 225 succeeded, 7,736 `skipped`, 0 failed |
+| Distinct events over 50 subscriptions | off | 5,955 | 596/s | 91 / 652 ms | 5,833 succeeded, 272 `failed` |
+| | on | 7,992 | 799/s | 103 / 286 ms | 5,432 succeeded, 2,710 `skipped`, 0 failed |
 
-These numbers say nothing about real Stripe latency, Supabase, or a deployed server.
+How to read this:
+
+- **The shortcut is faster under contention** because it trusts that a later read was fresh. This fake Stripe never returns a stale read, so the risk the shortcut takes (`shortcut_on_keeps_a_stale_read_documented_risk`) cannot show up here.
+- **With the shortcut off,** a subscription hammered by many events at once leaves many events `failed`. Stripe redelivers them later. Each row still ended at Stripe's state.
+- **Real-world relevance:** these numbers say nothing about real Stripe latency or read freshness, Supabase, or a deployed server.
 
 ## Supabase notes
 
