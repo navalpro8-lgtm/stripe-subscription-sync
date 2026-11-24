@@ -98,7 +98,7 @@ A delivery holds its event's claim from `claim_event` until `finish_event`. Afte
 
 - **Too short:** a slow but healthy worker loses its claim. Its work is then wasted, and the event is fetched again by the next delivery. That is safe, but it costs extra Stripe calls, and the slow worker answers 500.
 - **Too long:** after a crash, the event waits that long before a redelivery can take it over. Until then, redeliveries get 409.
-- **How to pick:** set it above the longest time one delivery can take. That is up to 9 attempts, with about 3 s of backoff in total, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
+- **How to pick:** set it above the longest time one delivery can take. That is up to 9 attempts (8 retries), with at most about 3.6 s of backoff in total, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
 
 ### Rotating the webhook secret
 
@@ -207,6 +207,8 @@ Results on this Windows laptop, 2026-11-24, with 8 retries and exponential backo
 | | on | 8,390 | 839/s | 101 / 264 ms | 5,667 succeeded, 2,873 `skipped`, 0 failed |
 
 How to read this:
+
+- **Under heavy contention on a single subscription, many events fail with a 500 and rely on Stripe's redelivery; rows still converge.**
 
 - **The shortcut is faster under contention** because it trusts that a later read was fresh. This fake Stripe never returns a stale read, so the risk the shortcut takes (`shortcut_on_keeps_a_stale_read_documented_risk`) cannot show up here.
 - **With the shortcut off,** a subscription hammered by many events at once leaves many events `failed`. Stripe redelivers them later. Each row still ended at Stripe's state.

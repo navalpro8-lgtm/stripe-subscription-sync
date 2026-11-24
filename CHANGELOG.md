@@ -16,6 +16,7 @@ Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPG
 - **Mode separation:** events, fetched subscriptions, rows and links from the other Stripe mode are refused without writing. Connect events are recorded as `ignored`.
 - **Claim timeout:** `claimTimeoutSeconds`, default 120, validated.
 - **Item paging:** subscription items are paged when `has_more` is set.
+- **Stale-read guard:** a fresh `customer.subscription.updated` whose fetch still shows the event's own previous `status` or `cancel_at_period_end` is retried, not written.
 - **Reconciliation:** `reconcileSubscription` and `reconcileCustomer`, on the same compare-and-swap path, with typed results.
 - **Logging:** structured, redacted log lines, plus a correlation id on stored errors.
 - **Operations:** `sql/health.sql`, and a `maxBodyBytes` limit (default 1 MiB) on the Next.js route.
@@ -24,6 +25,8 @@ Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPG
 
 **Changed**
 
+- **Conflict retries:** 8 retries (9 attempts) with exponential backoff and full jitter (25 ms doubling, capped at 1 s), instead of 5 retries with 10–50 ms jitter.
+- **Upgrade:** two steps, `0002_v0.2.0_expand.sql` and then `0003_v0.2.0_contract.sql`. Neither needs a webhook pause.
 - **Load test:** labelled synthetic. It reports both shortcut modes and waits for in-flight requests between scenarios.
 - **Maintainer docs:** `PLAN.md` moved to `docs/maintainers/`.
 
