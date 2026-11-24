@@ -2,6 +2,31 @@
 
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/); before 1.0.0, a minor version may contain breaking changes.
 
+## 0.2.0 (unreleased)
+
+Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPGRADING.md).
+
+**Breaking**
+
+- **Read-order shortcut is off by default.** It is now opt-in (`readOrderShortcut: true`), because it assumes a Stripe read that starts after an event arrived reflects that event. With it off, an event fetches for itself. Under contention, events that used to end as `skipped` now end as `succeeded`, or `failed` for Stripe to retry.
+- **`livemode` columns and option.** A required `livemode boolean` column on `stripe_events`, `stripe_customer_links` and `stripe_subscriptions`, and a required `SyncDeps.livemode`. Run `sql/migrations/0002_v0.2.0.sql`. The SQL functions `claim_event` and `link_customer`, and the `SyncStore` methods `claimEvent` and `linkCustomer`, take the new arguments.
+
+**Added**
+
+- **Mode separation:** events, fetched subscriptions, rows and links from the other Stripe mode are refused without writing. Connect events are recorded as `ignored`.
+- **Claim timeout:** `claimTimeoutSeconds`, default 120, validated.
+- **Item paging:** subscription items are paged when `has_more` is set.
+- **Reconciliation:** `reconcileSubscription` and `reconcileCustomer`, on the same compare-and-swap path, with typed results.
+- **Logging:** structured, redacted log lines, plus a correlation id on stored errors.
+- **Operations:** `sql/health.sql`, and a `maxBodyBytes` limit (default 1 MiB) on the Next.js route.
+- **Migrations and docs:** numbered migrations, `docs/RUNBOOK.md`, `docs/RETENTION.md`, `docs/UPGRADING.md` and `docs/OWNER_CHECKLIST.md`.
+- **Tests and CI:** a packaging smoke test (`npm run smoke:pack`), a multi-process concurrency test, and a CI job for a clean clone without `DATABASE_URL`.
+
+**Changed**
+
+- **Load test:** labelled synthetic. It reports both shortcut modes and waits for in-flight requests between scenarios.
+- **Maintainer docs:** `PLAN.md` moved to `docs/maintainers/`.
+
 ## 0.1.0 (unreleased)
 
 First public version.

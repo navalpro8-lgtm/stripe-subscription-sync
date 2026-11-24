@@ -23,6 +23,6 @@ This is a **reference implementation**. It has not been audited, and it is **not
 
 ## Reporting
 
-Please report a vulnerability privately, not in a public issue. Use GitHub's private vulnerability reporting: the repository's **Security** tab, then **Report a vulnerability**. Include what you found, how to reproduce it, and which files are involved. Maintainers: enable that setting under **Settings → Code security** once the repository is public.
+Please report a vulnerability privately, not in a public issue. Use GitHub's private vulnerability reporting: the repository's **Security** tab, then **Report a vulnerability**. Include what you found, how to reproduce it, and which files are involved. If the **Report a vulnerability** button is missing, the setting is off; see [docs/OWNER_CHECKLIST.md](docs/OWNER_CHECKLIST.md) for enabling it. GitHub offers it only on public repositories.
 
 There is no bug bounty, and no response-time promise.

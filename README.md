@@ -221,12 +221,15 @@ How to read this:
 
 | Status | What |
 |---|---|
-| **Tested in CI** (GitHub Actions, ubuntu-latest, from 2026-11-23) | Lint, typecheck, the automated suite, build, and the example app's typecheck and `next build`, on **Node 22 and Node 24**, against a **Postgres 17** service container |
-| **Tested locally** (Windows 11, 2026-11-23) | **Automated suite:** Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5, React 19.2.9, supabase-js 2.119.0. **Manual end-to-end runs** (see [below](#manual-end-to-end-run)). **The local load test** above |
+| **Tested in CI, v0.2.0 branch** (GitHub Actions, ubuntu-latest, run 45329916401, 2026-11-24) | **Postgres service job:** lint, typecheck, 147 tests, build, the packaging smoke test, and the example app's typecheck and `next build`, on **Node 22 and Node 24**, against a **Postgres 17** service container. **Clean-clone job:** a clean clone with **no `DATABASE_URL`**, `npm ci && npm run check` on Node 22 with embedded-postgres on Linux, 147 tests |
+| **Tested locally, v0.2.0 branch** (Windows 11, 2026-11-24) | **Automated suite:** `npm run check`, 147 tests, on Node 26.13.1; Postgres 17 (embedded-postgres 17.11.0-beta.19); `pg` 8.23.1; `stripe` 23.1.0 for signature verification; TypeScript 6.0.3. **Example app:** typecheck and `next build` with Next 16.4.5. **Other checks:** `npm run smoke:pack`, and the synthetic load test in both shortcut modes |
+| **Tested manually, v0.1.0 only** (2026-11-23) | **The three manual end-to-end runs** [below](#manual-end-to-end-run), against a Stripe sandbox and a Supabase project. They used v0.1.0 code: read-order shortcut always on, no `livemode`, no reconciliation. **Not repeated for v0.2.0** |
 | **Expected to work** (configured, not yet run) | `docker-compose.yml` |
-| **Unverified** | **Checkout in a browser:** a person paying on Stripe's hosted page. The third manual run completed Checkout through Stripe's test-mode API with the test card token instead. **Data API:** reading rows through Supabase's Data API with a real user JWT; RLS was checked in SQL with Supabase's real roles. **Concurrency:** heavy concurrent or racing deliveries on real infrastructure; the automated suite forces them locally, the load test runs them locally, and the real run saw only pairs of simultaneous events. **Stripe API versions:** any other than those named here. **Platforms:** Postgres versions other than 17; edge runtimes; the embedded-postgres test setup on macOS or Linux (only run on Windows; npm 11 may skip its install script there, so use `DATABASE_URL` if it fails) |
+| **Unverified** | **For v0.2.0:** anything against real Stripe or a real Supabase project, including `livemode` handling, item paging, `reconcileSubscription` / `reconcileCustomer` with the real SDK, and the 0002 migration on Supabase. **Checkout in a browser:** a person paying on Stripe's hosted page. **Data API:** reading rows with a real user JWT. **A deployed route,** and your host's body limits. **Concurrency on real infrastructure:** the multi-process test uses 4 local processes and one database. **Migration lock times** on large tables. **Stripe API versions** other than those named here. **Platforms:** Postgres other than 17, edge runtimes, macOS. Steps for the owner: [docs/OWNER_CHECKLIST.md](docs/OWNER_CHECKLIST.md) |
 
 ### Manual end-to-end run
+
+> **These runs used v0.1.0**, before this branch's changes. With v0.2.0 the shortcut is off by default, so the `skipped` results below would be `succeeded`, each with its own fetch. These runs have not been repeated.
 
 On 2026-11-23 the example app ran against a Stripe sandbox and a new Supabase project (Postgres 17.12, `sql/schema.sql` and `sql/supabase.sql` applied). Stripe CLI 1.55.14 forwarded the events, and the harness was [examples/nextjs-supabase/scripts/e2e-sandbox.mjs](examples/nextjs-supabase/scripts/e2e-sandbox.mjs).
 
@@ -266,8 +269,8 @@ The run went through these steps:
 
 ## Size
 
-`src/` is 706 lines: `process-event.ts` 252, `types.ts` 149, `errors.ts` 26, the rest under 80 each. `sql/schema.sql` is 267 lines.
+`src/` is 1,186 lines: `process-event.ts` 351, `types.ts` 193, `reconcile.ts` 141, the rest under 100 each. `sql/schema.sql` is 288 lines.
 
 ## Docs
 
-[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [docs/RUNBOOK.md](docs/RUNBOOK.md) · [docs/RETENTION.md](docs/RETENTION.md) · [docs/UPGRADING.md](docs/UPGRADING.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [PLAN.md](PLAN.md) · [LICENSE](LICENSE) (MIT)
+[docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) · [docs/RUNBOOK.md](docs/RUNBOOK.md) · [docs/RETENTION.md](docs/RETENTION.md) · [docs/UPGRADING.md](docs/UPGRADING.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [fixtures/README.md](fixtures/README.md) · [docs/OWNER_CHECKLIST.md](docs/OWNER_CHECKLIST.md) · maintainers: [PLAN.md](docs/maintainers/PLAN.md), [HARDENING_PLAN.md](docs/maintainers/HARDENING_PLAN.md) · [LICENSE](LICENSE) (MIT)

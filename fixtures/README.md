@@ -6,7 +6,9 @@ Every file here is labelled with `_provenance`:
   the API version named by its directory, trimmed to the fields this module reads plus a few
   neighbours. It was **not** produced by Stripe. Ids, amounts and timestamps are made up.
 - `"stripe-generated"`: captured from a real Stripe sandbox (for example with `stripe trigger` and
-  `stripe listen --print-json`). **There are none yet**: no Stripe account was used to build this repo.
+  `stripe listen --print-json`). **There are none yet.** Every fixture here is synthetic. The manual
+  runs against a real Stripe sandbox are recorded in the main [README](../README.md#manual-end-to-end-run),
+  not as fixtures. How to capture real ones: [docs/OWNER_CHECKLIST.md](../docs/OWNER_CHECKLIST.md).
 
 Each file is one case: an `event` as delivered to the webhook, and `retrieve`, the subscription that
 `subscriptions.retrieve` returns for it (absent when the handler should not fetch).
