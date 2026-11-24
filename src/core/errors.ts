@@ -50,6 +50,14 @@ export class ConflictRetriesExhaustedError extends Error {
   }
 }
 
+/** Every read Stripe returned still showed the state from before the event being processed. */
+export class StaleReadError extends Error {
+  constructor(subscriptionId: string, field: string) {
+    super(`Stripe kept returning subscription ${subscriptionId} with "${field}" from before this event; retry later`);
+    this.name = 'StaleReadError';
+  }
+}
+
 /** Another worker took over this event's claim. This worker must not write or mark anything. */
 export class ClaimLostError extends Error {
   constructor(eventId: string) {

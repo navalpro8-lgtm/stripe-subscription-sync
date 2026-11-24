@@ -98,7 +98,7 @@ A delivery holds its event's claim from `claim_event` until `finish_event`. Afte
 
 - **Too short:** a slow but healthy worker loses its claim. Its work is then wasted, and the event is fetched again by the next delivery. That is safe, but it costs extra Stripe calls, and the slow worker answers 500.
 - **Too long:** after a crash, the event waits that long before a redelivery can take it over. Until then, redeliveries get 409.
-- **How to pick:** set it above the longest time one delivery can take. That is up to 6 attempts, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
+- **How to pick:** set it above the longest time one delivery can take. That is up to 9 attempts, with about 3 s of backoff in total, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
 
 ### Rotating the webhook secret
 
@@ -138,10 +138,11 @@ Every test except the policy unit tests asserts database state, against a real P
 | A stale fetch never overwrites a newer committed write | `overlapping_fetches_never_overwrite_a_newer_committed_write` |
 | Default (shortcut off): every subscription event fetches for itself, so a stale read by another event does not stop it converging | `shortcut_off_converges_after_a_stale_read`, `overlapping_fetches_never_overwrite_a_newer_committed_write` |
 | With `readOrderShortcut: true`: an event whose subscription row came from a Stripe read that began after the event arrived is `skipped` without a fetch (assumes that read was not stale) | `event_already_covered_by_a_later_read_is_not_refetched`, `conflict_with_a_later_read_counts_as_done_without_retrying` |
-| Conflicts are retried 5 times; then the event is `failed` and retryable | `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
+| Conflicts are retried 8 times with exponential backoff; then the event is `failed` and retryable | `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
 | A worker whose claim was taken over cannot write, or mark the event, including when it finishes after the new worker | `stale_worker_cannot_apply_after_claim_takeover`, `old_worker_finishing_last_cannot_overwrite_the_new_outcome`, `expired_worker_cannot_mark_another_workers_attempt` |
 | The takeover threshold is configurable, and invalid values fail at startup | `claim_timeout_is_configurable`, `invalid_claim_timeout_fails_at_startup` |
 | A crash after the claim does not strand the event | `crash_after_insert_is_recovered_on_retry` |
+| A fresh `customer.subscription.updated` whose fetch still shows the event's own previous `status` / `cancel_at_period_end` is retried, not written; if it stays stale the event fails; old events are not checked | `stale_read_contradicting_the_event_is_retried_not_written`, `stale_reads_that_persist_fail_the_event_without_writing`, `old_events_are_not_checked_for_staleness` |
 | Missing required fields: 500, nothing written, retry succeeds | `missing_required_field_fails_without_state_change_then_retry_succeeds` |
 | A cancelled subscription is never brought back, and a deletion is never treated as done until a terminal status is read | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried`, `deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot` |
 | One subscription's cancellation does not revoke another | `cancellation_does_not_revoke_another_active_subscription` |
@@ -149,7 +150,7 @@ Every test except the policy unit tests asserts database state, against a real P
 | Every subscription item is stored; an item without a product fails without writing | `multi_item_subscription_stores_every_item`, `incomplete_item_list_fails_without_state_change` |
 | An embedded item list with `has_more` is paged through (`subscriptionItems.list` in `fromStripeSdk`); a failure on any page fails the event and writes nothing; without a pager, `has_more` fails the event | `item_list_is_paged_when_has_more`, `failure_on_a_later_item_page_fails_without_writing`, `incomplete_item_list_fails_without_state_change`, `stripe_adapter_pages_items_with_subscription_items_list` |
 | Plan changes and cancel-at-period-end are reflected | `downgrade_and_cancellation` |
-| A v0.1.0 database upgraded with `sql/migrations/0002` ends identical to a fresh install (plain Postgres) | `upgrade_from_v0_1_0_matches_a_fresh_install` |
+| A v0.1.0 database upgraded with `sql/migrations/0002` (expand) and `0003` (contract) ends identical to a fresh install; v0.1.0 and v0.2.0 calls both work in between; neither step rewrites a table (plain Postgres) | `upgrade_from_v0_1_0_matches_a_fresh_install`, `expand_step_changes_no_table_files` |
 | Reconcile repairs drift, respects tombstones, and is safe alongside a live event in either commit order | `reconcile_repairs_drift`, `reconcile_respects_tombstone`, `reconcile_concurrent_with_live_event_webhook_commits_first`, `reconcile_concurrent_with_live_event_reconcile_commits_first` |
 | Reconcile failures are typed results and write nothing; `reconcileCustomer` pages and reports truncation | `reconcile_returns_typed_failures_without_writing`, `reconcile_customer_pages_through_subscriptions` |
 | Secrets, keys, JWTs and emails in payloads or error messages never reach logs or `last_error` | `canaries_never_reach_logs_or_last_error` |
@@ -194,16 +195,16 @@ After each scenario it waits for the server to finish in-flight requests, sends 
 npm run build && npm i --no-save autocannon@8.0.0 && node bench/load-test.mjs
 ```
 
-Results on this Windows laptop, 2026-11-24, from the first of two runs; the second run was within about 10%. In both runs every database check held in every scenario and mode, and no event was left `processing`.
+Results on this Windows laptop, 2026-11-24, with 8 retries and exponential backoff (one run). Every database check held in every scenario and mode, and no event was left `processing`. The "before" figures are from the earlier 5-retry, 10–50 ms jitter version.
 
 | Scenario | Shortcut | Requests in 10 s | Throughput | Latency p50 / p99 | Event outcomes |
 |---|---|---|---|---|---|
-| Same event from 100 connections | off | 20,786 | 1,890/s | 49 / 131 ms | applied once; the rest 200 (duplicate) or 409 (busy) |
-| | on | 18,964 | 1,897/s | 49 / 148 ms | same |
-| Distinct events, one subscription | off | 2,033 | 203/s | 505 / 674 ms | 299 succeeded, 1,835 `failed` after 5 retries (500, Stripe would redeliver) |
-| | on | 7,860 | 786/s | 124 / 235 ms | 225 succeeded, 7,736 `skipped`, 0 failed |
-| Distinct events over 50 subscriptions | off | 5,955 | 596/s | 91 / 652 ms | 5,833 succeeded, 272 `failed` |
-| | on | 7,992 | 799/s | 103 / 286 ms | 5,432 succeeded, 2,710 `skipped`, 0 failed |
+| Same event from 100 connections | off | 19,617 | 1,962/s | 48 / 132 ms | applied once; the rest 200 (duplicate) or 409 (busy) |
+| | on | 19,790 | 1,979/s | 47 / 120 ms | same |
+| Distinct events, one subscription | off | 568 | 57/s | 1,856 / 3,337 ms | 297 succeeded, 372 `failed` (56%, before: 86%); 500, Stripe would redeliver |
+| | on | 8,331 | 833/s | 114 / 233 ms | 224 succeeded, 8,208 `skipped`, 0 failed |
+| Distinct events over 50 subscriptions | off | 5,985 | 599/s | 80 / 1,693 ms | 6,103 succeeded, 32 `failed` (0.5%, before: 272 failed, 4.5%) |
+| | on | 8,390 | 839/s | 101 / 264 ms | 5,667 succeeded, 2,873 `skipped`, 0 failed |
 
 How to read this:
 

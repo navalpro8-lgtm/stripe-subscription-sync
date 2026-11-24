@@ -15,7 +15,10 @@ export interface StripeEventLike {
   livemode?: boolean;
   /** Set on Connect events (from a connected account). Those are recorded as ignored. */
   account?: string | null;
-  data: { object: unknown };
+  /** Unix seconds. Used only by the stale-read guard. */
+  created?: number;
+  /** previous_attributes is used only to detect a stale read, never written. */
+  data: { object: unknown; previous_attributes?: unknown };
 }
 
 export interface CheckoutSessionLike {

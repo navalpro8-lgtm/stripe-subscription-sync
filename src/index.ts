@@ -17,6 +17,7 @@ export {
   MissingFieldError,
   ModeMismatchError,
   OwnerMismatchError,
+  StaleReadError,
   UnlinkedCustomerError,
 } from './core/errors.js';
 export { redact } from './core/redact.js';

@@ -13,6 +13,7 @@ import {
   ClaimLostError,
   ConflictRetriesExhaustedError,
   MappingError,
+  StaleReadError,
   MissingFieldError,
   ModeMismatchError,
   OwnerMismatchError,
@@ -30,8 +31,20 @@ import type {
   UserResolver,
 } from './types.js';
 
-/** Retries after a revision conflict (so up to 6 attempts in total). */
-const MAX_CONFLICT_RETRIES = 5;
+/** Retries after a revision conflict or a stale read (so up to 9 attempts in total). */
+const MAX_CONFLICT_RETRIES = 8;
+/** Exponential backoff with full jitter between attempts: up to 25, 50, 100, ... ms, capped. */
+const BACKOFF_BASE_MS = 25;
+const BACKOFF_CAP_MS = 1000;
+
+/**
+ * Stale-read guard window. For a customer.subscription.updated event created less than this many
+ * seconds ago, a fetch that still shows the event's `previous_attributes` value of a guarded field
+ * (while the event itself shows a different value) is treated as a stale read and retried, not
+ * written. Older events are not checked: by then the field may legitimately have changed back.
+ */
+const STALE_GUARD_SECONDS = 60;
+const STALE_GUARDED_FIELDS = ['status', 'cancel_at_period_end'] as const;
 
 /** Upper bound on item pages fetched for one subscription read, against a list that never ends. */
 const MAX_ITEM_PAGES = 100;
@@ -157,8 +170,9 @@ export async function syncSubscription(
   const { store, stripe } = c.deps;
   const shortcut = c.options.readOrderShortcut && (o.allowShortcut ?? true) && !o.mustBeTerminal;
 
+  let staleField: string | null = null;
   for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
-    if (attempt > 0) await sleep(10 + Math.random() * 40);
+    if (attempt > 0) await sleep(Math.random() * Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1)));
 
     const read = await store.beginRead(subscriptionId, c.event.id);
     // Opt-in read-order shortcut (SyncDeps.readOrderShortcut). The stored row came from a Stripe
@@ -179,6 +193,12 @@ export async function syncSubscription(
     if (o.mustBeTerminal && !TERMINAL_STATUSES.has(fetched.status)) {
       // A deleted event, but Stripe's read does not show it yet. Do not write a live state.
       throw new Error(`Subscription ${subscriptionId} is "${fetched.status}" in Stripe after a deleted event; retry later`);
+    }
+    staleField = contradictsEvent(c.event, fetched);
+    if (staleField) {
+      // Stripe returned the state from before this very event: a stale read. Do not write it.
+      c.log.warn('stripe_sync.stale_read', { eventId: c.event.id, subscriptionId, field: staleField, attempt });
+      continue;
     }
 
     const userId = await c.users.userForSubscription({ id: subscriptionId, customerId: fetched.customer_id }, store);
@@ -202,7 +222,20 @@ export async function syncSubscription(
         continue;
     }
   }
+  if (staleField) throw new StaleReadError(subscriptionId, staleField);
   throw new ConflictRetriesExhaustedError(subscriptionId, MAX_CONFLICT_RETRIES);
+}
+
+/** The guarded field the fetched snapshot shows at its pre-event value, or null. See STALE_GUARD_SECONDS. */
+function contradictsEvent(event: StripeEventLike, fetched: { status: string; cancel_at_period_end: boolean }): string | null {
+  if (event.type !== 'customer.subscription.updated' || typeof event.created !== 'number') return null;
+  if (Math.abs(Date.now() / 1000 - event.created) > STALE_GUARD_SECONDS) return null;
+  const now = rec(event.data.object);
+  const before = rec(event.data.previous_attributes);
+  for (const field of STALE_GUARDED_FIELDS) {
+    if (field in before && now[field] !== before[field] && fetched[field] === before[field]) return field;
+  }
+  return null;
 }
 
 /** invoice.paid / invoice.payment_failed only trigger a re-fetch of their subscription. */

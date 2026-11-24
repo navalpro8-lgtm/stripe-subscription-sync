@@ -135,14 +135,14 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     expect(r1.status).toBe(500);
     expect(await eventRow(ctx.a, updated.id)).toMatchObject({ status: 'failed', attempts: 1 });
     expect(String((await eventRow(ctx.a, updated.id))?.last_error)).toMatch(/conflict/i);
-    // 1 initial attempt + 5 retries, each lost to the other writer; this event wrote nothing.
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_a', revision: 7, last_event_id: created.id });
+    // 1 initial attempt + 8 retries, each lost to the other writer; this event wrote nothing.
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_a', revision: 10, last_event_id: created.id });
 
     ctx.fake.afterRead = undefined;
     const r2 = await w().deliver(updated);
     expect(r2.status).toBe(200);
     expect(await eventRow(ctx.a, updated.id)).toMatchObject({ status: 'succeeded', attempts: 2 });
-    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_b', revision: 8, last_event_id: updated.id });
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_b', revision: 11, last_event_id: updated.id });
   });
 
   test('stale_worker_cannot_apply_after_claim_takeover', async () => {
