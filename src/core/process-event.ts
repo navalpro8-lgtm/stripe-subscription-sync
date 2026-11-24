@@ -65,7 +65,7 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
     return { httpStatus: 400, outcome: 'livemode_mismatch' };
   }
 
-  const claim = await deps.store.claimEvent(event.id, event.type, token, options.livemode);
+  const claim = await deps.store.claimEvent(event.id, event.type, token, options.livemode, options.claimTimeoutSeconds);
   if (claim === 'done') return { httpStatus: 200, outcome: 'duplicate' };
   if (claim === 'busy') {
     log.info?.('event is being processed by another worker', fields);

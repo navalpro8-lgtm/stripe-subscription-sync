@@ -6,6 +6,7 @@ export type * from './core/types.js';
 // Extension points
 export { exampleEntitlementPolicy, getEntitlement, type Entitlement, type EntitlementPolicy } from './policy/entitlements.js';
 export { defaultUserResolver, isValidUserId } from './config/user-mapping.js';
+export { DEFAULT_CLAIM_TIMEOUT_SECONDS, MAX_CLAIM_TIMEOUT_SECONDS, MIN_CLAIM_TIMEOUT_SECONDS, resolveOptions } from './config/options.js';
 export { DEFAULT_ENABLED_EVENTS, IMPLEMENTED_EVENTS, resolveEnabledEvents, type ImplementedEvent } from './config/events.js';
 
 // Adapters

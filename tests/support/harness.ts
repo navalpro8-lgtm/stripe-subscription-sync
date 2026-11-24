@@ -88,6 +88,7 @@ export interface WorkerOptions {
   readOrderShortcut?: boolean;
   /** Default false: the harness serves test mode, like the builders' events. */
   livemode?: boolean;
+  claimTimeoutSeconds?: number;
 }
 
 /** One "worker": a route handler with its own DB connection. */
@@ -103,6 +104,7 @@ export function worker(o: WorkerOptions) {
       users: o.users,
       enabledEvents: o.enabledEvents,
       readOrderShortcut: o.readOrderShortcut,
+      claimTimeoutSeconds: o.claimTimeoutSeconds,
     },
   });
   return {
@@ -143,7 +145,7 @@ export async function linkCustomer(client: pg.Client, customerId: string, userId
   );
 }
 
-/** Makes a claim look older than the 120 s takeover threshold. */
-export async function ageClaim(client: pg.Client, eventId: string): Promise<void> {
-  await client.query(`update public.stripe_events set claimed_at = now() - interval '10 minutes' where event_id = $1`, [eventId]);
+/** Makes a claim look `seconds` old (default 10 minutes: past the default 120 s threshold). */
+export async function ageClaim(client: pg.Client, eventId: string, seconds = 600): Promise<void> {
+  await client.query(`update public.stripe_events set claimed_at = now() - make_interval(secs => $2) where event_id = $1`, [eventId, seconds]);
 }

@@ -63,9 +63,11 @@ create index stripe_subscriptions_user_id_idx on public.stripe_subscriptions (us
 -- ---------------------------------------------------------------- event claims
 
 -- Returns 'claimed', 'done' (already finished: acknowledge) or 'busy' (another worker holds a
--- fresh claim: do not acknowledge). A failed event, or a claim older than 120 seconds, is taken
--- over atomically by the ON CONFLICT ... WHERE clause.
-create function public.claim_event(p_event_id text, p_event_type text, p_token uuid, p_livemode boolean)
+-- fresh claim: do not acknowledge). A failed event, or a claim older than p_claim_timeout_seconds
+-- (SyncDeps.claimTimeoutSeconds, default 120), is taken over atomically by ON CONFLICT ... WHERE.
+create function public.claim_event(
+  p_event_id text, p_event_type text, p_token uuid, p_livemode boolean, p_claim_timeout_seconds integer
+)
 returns text
 language plpgsql
 set search_path = public
@@ -73,13 +75,17 @@ as $$
 declare
   v_status text;
 begin
+  if p_claim_timeout_seconds is null or p_claim_timeout_seconds < 1 then
+    raise exception 'claim_event: invalid claim timeout %', p_claim_timeout_seconds;
+  end if;
+
   insert into public.stripe_events as e (event_id, event_type, livemode, status, claimed_by, claimed_at, attempts)
   values (p_event_id, p_event_type, p_livemode, 'processing', p_token, now(), 1)
   on conflict (event_id) do update
     set status = 'processing', claimed_by = excluded.claimed_by, claimed_at = now(),
         attempts = e.attempts + 1, last_error = null, updated_at = now()
     where e.status = 'failed'
-       or (e.status = 'processing' and e.claimed_at < now() - interval '120 seconds')
+       or (e.status = 'processing' and e.claimed_at < now() - make_interval(secs => p_claim_timeout_seconds))
   returning e.status into v_status;
 
   if found then

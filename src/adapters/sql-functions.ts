@@ -17,8 +17,14 @@ const LINK_RESULTS: readonly LinkResult[] = ['linked', 'already_linked', 'mismat
 
 export function storeFromFunctions(call: FunctionCaller): SyncStore {
   return {
-    async claimEvent(eventId, eventType, token, livemode) {
-      const r = await call('claim_event', { p_event_id: eventId, p_event_type: eventType, p_token: token, p_livemode: livemode });
+    async claimEvent(eventId, eventType, token, livemode, claimTimeoutSeconds) {
+      const r = await call('claim_event', {
+        p_event_id: eventId,
+        p_event_type: eventType,
+        p_token: token,
+        p_livemode: livemode,
+        p_claim_timeout_seconds: claimTimeoutSeconds,
+      });
       return oneOf('claim_event', r, CLAIM_RESULTS);
     },
 

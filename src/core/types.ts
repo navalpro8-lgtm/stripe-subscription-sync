@@ -106,7 +106,8 @@ export type LinkResult = 'linked' | 'already_linked' | 'mismatch' | 'mode_mismat
 
 /** Extension point 3: persistence. The shipped adapters call the functions in sql/schema.sql. */
 export interface SyncStore {
-  claimEvent(eventId: string, eventType: string, token: string, livemode: boolean): Promise<ClaimResult>;
+  /** claimTimeoutSeconds: a 'processing' claim older than this is taken over. */
+  claimEvent(eventId: string, eventType: string, token: string, livemode: boolean, claimTimeoutSeconds: number): Promise<ClaimResult>;
   /** Returns false if the caller no longer holds the claim (nothing was changed). */
   finishEvent(eventId: string, token: string, status: FinalStatus, error: string | null): Promise<boolean>;
   /** Call immediately before the Stripe read. */
@@ -164,6 +165,12 @@ export interface SyncDeps {
    * docs/SYNC_MODEL.md and tests/read-order.test.ts.
    */
   readOrderShortcut?: boolean;
+  /**
+   * A 'processing' claim older than this many seconds is taken over by the next delivery.
+   * Default 120; an integer from 10 to 3600. Set it above the longest time one delivery can take
+   * (Stripe read timeout x attempts, plus database time). See README "Choosing claimTimeoutSeconds".
+   */
+  claimTimeoutSeconds?: number;
 }
 
 export type Outcome = FinalStatus | 'duplicate' | 'busy' | 'claim_lost' | 'livemode_mismatch';

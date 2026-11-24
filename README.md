@@ -81,12 +81,20 @@ Other frameworks: call [`processEvent(event, deps)`](src/core/process-event.ts) 
 
 | Mechanism | Implementation | Tests |
 |---|---|---|
-| Claim ownership and takeover (120 s) | `claim_event`, `finish_event`, `holds_event_claim` in [schema.sql](sql/schema.sql) | `duplicate_while_processing_is_not_acknowledged_then_succeeds_after_first_finishes`, `stale_worker_cannot_apply_after_claim_takeover`, `expired_worker_cannot_mark_another_workers_attempt` ([concurrency](tests/concurrency.test.ts), [delivery](tests/webhook-delivery.test.ts)) |
+| Claim ownership and takeover (`claimTimeoutSeconds`, default 120 s) | `claim_event`, `finish_event`, `holds_event_claim` in [schema.sql](sql/schema.sql) | `duplicate_while_processing_is_not_acknowledged_then_succeeds_after_first_finishes`, `stale_worker_cannot_apply_after_claim_takeover`, `old_worker_finishing_last_cannot_overwrite_the_new_outcome`, `expired_worker_cannot_mark_another_workers_attempt`, `claim_timeout_is_configurable` ([concurrency](tests/concurrency.test.ts), [delivery](tests/webhook-delivery.test.ts)) |
 | Atomic revision compare-and-update | `apply_subscription_snapshot` in [schema.sql](sql/schema.sql); `syncSubscription()` in [process-event.ts](src/core/process-event.ts) | `overlapping_fetches_never_overwrite_a_newer_committed_write`, `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
 | First-insert handling | `INSERT ... ON CONFLICT` in `apply_subscription_snapshot` | `concurrent_first_insert_creates_one_subscription` |
 | Read-order shortcut, opt-in (`readOrderShortcut`, default off) | `stripe_sync_seq`, `begin_subscription_read` in [schema.sql](sql/schema.sql); the `superseded` check in `syncSubscription()` | `event_already_covered_by_a_later_read_is_not_refetched`, `conflict_with_a_later_read_counts_as_done_without_retrying`, `shortcut_never_skips_a_deleted_event`; its risk: `shortcut_on_keeps_a_stale_read_documented_risk` |
 | Tombstones | `tombstoned_at` in `apply_subscription_snapshot`; terminal check in `syncSubscription()` | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried` |
 | Retry and crash recovery | `processEvent()` status handling; `claim_event` takeover | `crash_after_insert_is_recovered_on_retry`, `missing_required_field_fails_without_state_change_then_retry_succeeds`, `subscription_before_checkout_link_fails_then_succeeds_after_link` |
+
+### Choosing `claimTimeoutSeconds`
+
+A delivery holds its event's claim from `claim_event` until `finish_event`. After `claimTimeoutSeconds` (default 120, allowed 10 to 3600), the next delivery of the same event may take the claim over. Then the old worker can no longer write or mark anything; that is tested.
+
+- **Too short:** a slow but healthy worker loses its claim. Its work is then wasted, and the event is fetched again by the next delivery. That is safe, but it costs extra Stripe calls, and the slow worker answers 500.
+- **Too long:** after a crash, the event waits that long before a redelivery can take it over. Until then, redeliveries get 409.
+- **How to pick:** set it above the longest time one delivery can take. That is up to 6 attempts, each a Stripe read plus item pages, plus your Stripe client's own timeout and retries, plus database time. On a serverless host, the platform's maximum function duration is a natural choice, because a worker cannot outlive it.
 
 ## Guarantees, and the test for each
 
@@ -105,7 +113,8 @@ Every test except the policy unit tests asserts database state, against a real P
 | Default (shortcut off): every subscription event fetches for itself, so a stale read by another event does not stop it converging | `shortcut_off_converges_after_a_stale_read`, `overlapping_fetches_never_overwrite_a_newer_committed_write` |
 | With `readOrderShortcut: true`: an event whose subscription row came from a Stripe read that began after the event arrived is `skipped` without a fetch (assumes that read was not stale) | `event_already_covered_by_a_later_read_is_not_refetched`, `conflict_with_a_later_read_counts_as_done_without_retrying` |
 | Conflicts are retried 5 times; then the event is `failed` and retryable | `conflict_retries_exhausted_leaves_event_failed_and_retryable` |
-| A worker whose claim was taken over cannot write, or mark the event | `stale_worker_cannot_apply_after_claim_takeover`, `expired_worker_cannot_mark_another_workers_attempt` |
+| A worker whose claim was taken over cannot write, or mark the event, including when it finishes after the new worker | `stale_worker_cannot_apply_after_claim_takeover`, `old_worker_finishing_last_cannot_overwrite_the_new_outcome`, `expired_worker_cannot_mark_another_workers_attempt` |
+| The takeover threshold is configurable, and invalid values fail at startup | `claim_timeout_is_configurable`, `invalid_claim_timeout_fails_at_startup` |
 | A crash after the claim does not strand the event | `crash_after_insert_is_recovered_on_retry` |
 | Missing required fields: 500, nothing written, retry succeeds | `missing_required_field_fails_without_state_change_then_retry_succeeds` |
 | A cancelled subscription is never brought back, and a deletion is never treated as done until a terminal status is read | `deleted_subscription_is_not_resurrected`, `deleted_event_with_non_terminal_fetch_is_retried`, `deleted_event_is_not_satisfied_by_a_newer_non_terminal_snapshot` |

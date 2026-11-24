@@ -205,4 +205,58 @@ describe.each(ADAPTERS)('concurrency (%s adapter)', (adapter) => {
     expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'succeeded', claimed_by: tokenB });
     expect(await subscriptionRow(ctx.a)).toMatchObject({ revision: 2, last_event_id: evt.id });
   });
+  test('old_worker_finishing_last_cannot_overwrite_the_new_outcome', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    // Worker A will read a broken subscription (no customer), so its handler fails, but only
+    // after its claim was taken over and the new worker has finished.
+    ctx.fake.set(subscription({ omit: ['customer'] }));
+    const evt = event('customer.subscription.created', { id: 'sub_1' });
+    const holdA = ctx.fake.hold('sub_1');
+    const pA = w({ client: ctx.a }).deliver(evt);
+    await holdA.reached;
+
+    ctx.fake.set(subscription({ price: 'price_new' }));
+    await ageClaim(ctx.b, evt.id);
+    expect((await w({ client: ctx.b }).deliver(evt)).status).toBe(200);
+    const afterB = await eventRow(ctx.b, evt.id);
+    expect(afterB).toMatchObject({ status: 'succeeded', attempts: 2, last_error: null });
+
+    // A finishes last, with a failure. finish_event refuses it: B's outcome stands.
+    holdA.release();
+    expect(await pA).toMatchObject({ status: 500, body: { outcome: 'claim_lost' } });
+    expect(await eventRow(ctx.a, evt.id)).toMatchObject({
+      status: 'succeeded', claimed_by: afterB?.claimed_by, attempts: 2, last_error: null,
+    });
+    expect(await subscriptionRow(ctx.a)).toMatchObject({ price_id: 'price_new', revision: 1 });
+  });
+
+  test('claim_timeout_is_configurable', async () => {
+    await linkCustomer(ctx.a, 'cus_1', USER_A);
+    ctx.fake.set(subscription());
+    const evt = event('customer.subscription.created', { id: 'sub_1' });
+    const holdA = ctx.fake.hold('sub_1');
+    const pA = w({ client: ctx.a, claimTimeoutSeconds: 30 }).deliver(evt);
+    await holdA.reached;
+
+    // 20 s old: under the 30 s threshold, so a redelivery is told the event is busy.
+    await ageClaim(ctx.b, evt.id, 20);
+    expect(await w({ client: ctx.b, claimTimeoutSeconds: 30 }).deliver(evt)).toMatchObject({ status: 409, body: { outcome: 'busy' } });
+    // With the default 120 s, a 60 s old claim is still busy too.
+    await ageClaim(ctx.b, evt.id, 60);
+    expect((await w({ client: ctx.b }).deliver(evt)).status).toBe(409);
+    // 31 s old: past 30 s, so it is taken over.
+    await ageClaim(ctx.b, evt.id, 31);
+    expect(await w({ client: ctx.b, claimTimeoutSeconds: 30 }).deliver(evt)).toMatchObject({ status: 200, body: { outcome: 'succeeded' } });
+    expect(await eventRow(ctx.a, evt.id)).toMatchObject({ status: 'succeeded', attempts: 2 });
+
+    holdA.release();
+    expect(await pA).toMatchObject({ status: 500, body: { outcome: 'claim_lost' } });
+  });
+
+  test('invalid_claim_timeout_fails_at_startup', () => {
+    for (const bad of [9, 3601, 1.5, Number.NaN, '120' as unknown as number]) {
+      expect(() => w({ claimTimeoutSeconds: bad })).toThrow(/claimTimeoutSeconds must be an integer from 10 to 3600/);
+    }
+    for (const ok of [10, 120, 3600]) expect(() => w({ claimTimeoutSeconds: ok })).not.toThrow();
+  });
 });

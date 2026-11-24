@@ -28,7 +28,7 @@ const insertSub = (id: string, userId: string) =>
   );
 
 const FUNCTIONS = [
-  `public.claim_event('evt_x', 'customer.subscription.created', gen_random_uuid(), false)`,
+  `public.claim_event('evt_x', 'customer.subscription.created', gen_random_uuid(), false, 120)`,
   `public.finish_event('evt_x', gen_random_uuid(), 'succeeded', null)`,
   `public.holds_event_claim('evt_x', gen_random_uuid())`,
   `public.begin_subscription_read('sub_a', 'evt_x')`,
@@ -107,7 +107,7 @@ describe('permissions (Supabase roles, shim on plain Postgres)', () => {
 
     // Positive control: service_role can execute the functions and sees every row.
     const claimed = await as('service_role', null, async () => {
-      const r = await db.query(`select public.claim_event('evt_svc', 'customer.subscription.created', gen_random_uuid(), false) as r`);
+      const r = await db.query(`select public.claim_event('evt_svc', 'customer.subscription.created', gen_random_uuid(), false, 120) as r`);
       const all = await db.query('select count(*)::int as n from public.stripe_subscriptions');
       return { result: r.rows[0].r, rows: all.rows[0].n };
     });

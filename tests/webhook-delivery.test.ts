@@ -96,7 +96,7 @@ describe.each(ADAPTERS)('webhook delivery (%s adapter)', (adapter) => {
     const evt = event('customer.subscription.created', subscription());
 
     // A worker claimed the event and then died: no apply, no finish.
-    expect(await storeFor(adapter, ctx.b).claimEvent(evt.id, evt.type, randomUUID(), false)).toBe('claimed');
+    expect(await storeFor(adapter, ctx.b).claimEvent(evt.id, evt.type, randomUUID(), false, 120)).toBe('claimed');
 
     const whileFresh = await w().deliver(evt);
     expect(whileFresh.status).toBe(409);

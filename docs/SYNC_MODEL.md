@@ -5,7 +5,7 @@ Stripe is the source of truth. An event only says *which* subscription to look a
 ## Event lifecycle (`stripe_events`)
 
 1. The adapter verifies the signature on the raw body (`await req.text()`). Bad or missing signature: 400, nothing written. An event whose `livemode` differs from `SyncDeps.livemode`: 400 `livemode_mismatch`, nothing written. A Connect event (`account` set) is claimed and recorded as `ignored` (`connect_event_unsupported`); nothing is fetched.
-2. `claim_event(event_id, type, token, livemode)` inserts the event as `processing` with a random `claimed_by` token. It takes over an existing row atomically only if that row is `failed` or its claim is older than 120 s. Otherwise it returns `done` (succeeded / skipped / ignored: 200, no effect) or `busy` (another worker holds a fresh claim: 409, so Stripe retries later).
+2. `claim_event(event_id, type, token, livemode)` inserts the event as `processing` with a random `claimed_by` token. It takes over an existing row atomically only if that row is `failed` or its claim is older than `claimTimeoutSeconds` (default 120 s). Otherwise it returns `done` (succeeded / skipped / ignored: 200, no effect) or `busy` (another worker holds a fresh claim: 409, so Stripe retries later).
 3. The handler runs. `finish_event(event_id, token, status)` sets `succeeded`, `skipped`, `ignored` or `failed` only `WHERE claimed_by = token AND status = 'processing'`. If no row matches, the claim was lost and the response is 500.
 4. `failed` returns 500; Stripe redelivers and step 2 reclaims it. A crash leaves a `processing` row whose claim goes stale, and the next delivery takes it over, so no event is stranded.
 
