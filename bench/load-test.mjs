@@ -29,6 +29,7 @@ const T0 = 1_767_225_600;
 const subscription = (id, price) => ({
   id, object: 'subscription', customer: CUSTOMER, status: 'active', cancel_at_period_end: false,
   cancel_at: null, canceled_at: null, ended_at: null, trial_end: null,
+  livemode: false,
   items: { object: 'list', data: [{ id: `si_${id}`, quantity: 1, current_period_start: T0, current_period_end: T0 + 2_592_000,
     price: { id: price, object: 'price', product: 'prod_load' } }] },
 });
@@ -46,7 +47,7 @@ if (process.argv[2] === '--server') {
       return s;
     },
   };
-  const handler = createNextWebhookHandler({ stripe, webhookSecret: SECRET, sync: { store: postgresStore(pool), stripe: retriever, readOrderShortcut: process.env.READ_ORDER_SHORTCUT === '1' } });
+  const handler = createNextWebhookHandler({ stripe, webhookSecret: SECRET, sync: { livemode: false, store: postgresStore(pool), stripe: retriever, readOrderShortcut: process.env.READ_ORDER_SHORTCUT === '1' } });
 
   http.createServer((req, res) => {
     let body = '';
@@ -70,7 +71,6 @@ if (process.argv[2] === '--server') {
 
 // ------------------------------------------------------------------ driver
 async function main() {
-  const { default: autocannon } = await import('autocannon');
   const { default: EmbeddedPostgres } = await import('embedded-postgres');
 
   const pgPort = await freePort();
@@ -100,6 +100,7 @@ async function main() {
 }
 
 async function scenarios(base, client, mode, results) {
+  const { default: autocannon } = await import('autocannon');
   const setStripe = (subs) => fetch(`${base}/stripe-state`, { method: 'POST', body: JSON.stringify(subs) });
 
   const sign = (evt) => {
@@ -109,7 +110,7 @@ async function scenarios(base, client, mode, results) {
   const event = (id, type, objectId) => ({ id, object: 'event', type, created: T0, livemode: false, data: { object: { id: objectId } } });
   const reset = async () => {
     await client.query('truncate stripe_events, stripe_customer_links, stripe_subscriptions');
-    await client.query(`insert into stripe_customer_links values ($1, $2, 'load-setup', now())`, [CUSTOMER, USER]);
+    await client.query(`insert into stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event) values ($1, $2, false, 'load-setup')`, [CUSTOMER, USER]);
   };
   const run = async (name, opts, subIds, mutate) => {
     const r = await autocannon({ url: `${base}/webhook`, connections: 100, duration: 10, method: 'POST', ...opts });

@@ -11,6 +11,10 @@ export type IdOrObject = string | { id: string };
 export interface StripeEventLike {
   id: string;
   type: string;
+  /** Stripe sets this on every event. Compared with SyncDeps.livemode. */
+  livemode?: boolean;
+  /** Set on Connect events (from a connected account). Those are recorded as ignored. */
+  account?: string | null;
   data: { object: unknown };
 }
 
@@ -35,6 +39,8 @@ export interface SnapshotItem {
 export interface Snapshot {
   user_id: string;
   customer_id: string;
+  /** The fetched subscription's Stripe mode. Must equal SyncDeps.livemode. */
+  livemode: boolean;
   status: string;
   price_id: string;
   product_id: string;
@@ -57,6 +63,7 @@ export interface StoredSubscription {
   subscription_id: string;
   user_id: string;
   customer_id: string;
+  livemode: boolean;
   status: string;
   price_id: string;
   product_id: string;
@@ -85,7 +92,7 @@ export interface SubscriptionRetriever {
 
 export type ClaimResult = 'claimed' | 'done' | 'busy';
 export type FinalStatus = 'succeeded' | 'failed' | 'skipped' | 'ignored';
-export type ApplyResult = 'applied' | 'conflict' | 'claim_lost' | 'tombstoned' | 'user_mismatch';
+export type ApplyResult = 'applied' | 'conflict' | 'claim_lost' | 'tombstoned' | 'user_mismatch' | 'mode_mismatch';
 
 export interface ReadStart {
   /** Stored revision, 0 if there is no row. */
@@ -95,11 +102,11 @@ export interface ReadStart {
   /** The stored row already came from a Stripe read that began after this event first arrived. */
   superseded: boolean;
 }
-export type LinkResult = 'linked' | 'already_linked' | 'mismatch' | 'claim_lost';
+export type LinkResult = 'linked' | 'already_linked' | 'mismatch' | 'mode_mismatch' | 'claim_lost';
 
 /** Extension point 3: persistence. The shipped adapters call the functions in sql/schema.sql. */
 export interface SyncStore {
-  claimEvent(eventId: string, eventType: string, token: string): Promise<ClaimResult>;
+  claimEvent(eventId: string, eventType: string, token: string, livemode: boolean): Promise<ClaimResult>;
   /** Returns false if the caller no longer holds the claim (nothing was changed). */
   finishEvent(eventId: string, token: string, status: FinalStatus, error: string | null): Promise<boolean>;
   /** Call immediately before the Stripe read. */
@@ -111,7 +118,7 @@ export interface SyncStore {
     eventId: string,
     snapshot: Snapshot,
   ): Promise<ApplyResult>;
-  linkCustomer(customerId: string, userId: string, eventId: string, token: string): Promise<LinkResult>;
+  linkCustomer(customerId: string, userId: string, eventId: string, token: string, livemode: boolean): Promise<LinkResult>;
   findUserByCustomer(customerId: string): Promise<string | null>;
   listSubscriptionsForUser(userId: string): Promise<StoredSubscription[]>;
 }
@@ -132,6 +139,12 @@ export interface Logger {
 }
 
 export interface SyncDeps {
+  /**
+   * Required. The Stripe mode this endpoint serves: true for live mode, false for a sandbox or
+   * test mode. Events and fetched subscriptions from the other mode are refused without writing
+   * subscription or link state. Stripe Connect and multiple Stripe accounts are not supported.
+   */
+  livemode: boolean;
   store: SyncStore;
   stripe: SubscriptionRetriever;
   /** Default: defaultUserResolver (config/user-mapping.ts). */
@@ -153,9 +166,9 @@ export interface SyncDeps {
   readOrderShortcut?: boolean;
 }
 
-export type Outcome = FinalStatus | 'duplicate' | 'busy' | 'claim_lost';
+export type Outcome = FinalStatus | 'duplicate' | 'busy' | 'claim_lost' | 'livemode_mismatch';
 
 export interface ProcessResult {
-  httpStatus: 200 | 409 | 500;
+  httpStatus: 200 | 400 | 409 | 500;
   outcome: Outcome;
 }

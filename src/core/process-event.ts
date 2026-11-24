@@ -58,7 +58,14 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
   const token = globalThis.crypto.randomUUID();
   const fields = { eventId: event.id, eventType: event.type };
 
-  const claim = await deps.store.claimEvent(event.id, event.type, token);
+  // Mode first: an event from the other Stripe mode means this endpoint is misconfigured. Nothing
+  // is recorded; the 400 makes Stripe's retries visible in its Dashboard.
+  if (event.livemode !== options.livemode) {
+    log.error?.('event livemode does not match SyncDeps.livemode; nothing written', { ...fields, eventLivemode: event.livemode ?? null });
+    return { httpStatus: 400, outcome: 'livemode_mismatch' };
+  }
+
+  const claim = await deps.store.claimEvent(event.id, event.type, token, options.livemode);
   if (claim === 'done') return { httpStatus: 200, outcome: 'duplicate' };
   if (claim === 'busy') {
     log.info?.('event is being processed by another worker', fields);
@@ -70,7 +77,13 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
   try {
     const type = event.type as ImplementedEvent;
     const handler = options.enabled.has(type) ? HANDLERS[type] : undefined;
-    status = handler ? await handler({ event, token, deps, options, users: deps.users ?? defaultUserResolver }) : 'ignored';
+    if (typeof event.account === 'string' && event.account !== '') {
+      // Stripe Connect is not supported: record and acknowledge, never fetch with our key.
+      status = 'ignored';
+      error = 'connect_event_unsupported';
+    } else {
+      status = handler ? await handler({ event, token, deps, options, users: deps.users ?? defaultUserResolver }) : 'ignored';
+    }
   } catch (err) {
     if (err instanceof ClaimLostError) {
       log.warn?.(err.message, fields);
@@ -110,6 +123,9 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
     // No transaction is open here: the Stripe call happens between two independent statements.
     const fetched = toSnapshot(await stripe.retrieveSubscription(subscriptionId), subscriptionId);
 
+    if (fetched.livemode !== c.options.livemode) {
+      throw new Error(`Subscription ${subscriptionId} has livemode=${fetched.livemode}, endpoint expects ${c.options.livemode}; nothing written`);
+    }
     if (mustBeTerminal && !TERMINAL_STATUSES.has(fetched.status)) {
       // A deleted event, but Stripe's read does not show it yet. Do not write a live state.
       throw new Error(`Subscription ${subscriptionId} is "${fetched.status}" in Stripe after a deleted event; retry later`);
@@ -129,6 +145,8 @@ async function syncSubscription(c: Context, subscriptionId: string, mustBeTermin
         throw new ClaimLostError(c.event.id);
       case 'user_mismatch':
         throw new MappingError(`Subscription ${subscriptionId} belongs to another user; refusing to change its owner`);
+      case 'mode_mismatch':
+        throw new Error(`Stored subscription ${subscriptionId} is from the other Stripe mode; nothing written`);
       case 'conflict':
         logger?.info?.('revision conflict; re-reading', { subscriptionId, attempt });
         continue;
@@ -158,8 +176,9 @@ async function linkFromCheckout(c: Context) {
   const userId = c.users.userFromCheckoutSession(session);
   if (!userId) throw new MappingError(`No valid client_reference_id on ${where}`);
 
-  const result = await c.deps.store.linkCustomer(customerId, userId, c.event.id, c.token);
+  const result = await c.deps.store.linkCustomer(customerId, userId, c.event.id, c.token, c.options.livemode);
   if (result === 'claim_lost') throw new ClaimLostError(c.event.id);
+  if (result === 'mode_mismatch') throw new MappingError(`Customer ${customerId} is linked in the other Stripe mode; not relinking`);
   if (result === 'mismatch') throw new MappingError(`Customer ${customerId} is already linked to another user; not relinking`);
   return 'succeeded';
 }
@@ -210,6 +229,7 @@ export function toSnapshot(raw: unknown, subscriptionId: string): Omit<Snapshot,
 
   return {
     customer_id: need(idOf(sub.customer), 'customer'),
+    livemode: need(typeof sub.livemode === 'boolean' ? sub.livemode : null, 'livemode'),
     status: need(str(sub.status), 'status'),
     price_id: first.price_id,
     product_id: first.product_id,

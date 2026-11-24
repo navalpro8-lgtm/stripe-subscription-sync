@@ -6,6 +6,7 @@ const row = (status: string, id = `sub_${status}`): StoredSubscription => ({
   subscription_id: id,
   user_id: 'user_1',
   customer_id: 'cus_1',
+  livemode: false,
   status,
   price_id: 'price_1',
   product_id: 'prod_1',

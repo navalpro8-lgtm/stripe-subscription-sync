@@ -66,6 +66,7 @@ const start = (name, cmd, args, extraEnv = {}) => {
 start('app', process.execPath, [path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', '3000'], {
   STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET: webhookSecret,
+  STRIPE_LIVEMODE: 'false', // sk_test_ only (checked above)
   SUPABASE_URL: env.SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
 });

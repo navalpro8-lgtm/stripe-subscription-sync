@@ -30,23 +30,23 @@ create policy stripe_subscriptions_select_own
 
 -- Functions: Postgres grants EXECUTE to PUBLIC by default, so revoke from PUBLIC as well.
 revoke execute on function
-  public.claim_event(text, text, uuid),
+  public.claim_event(text, text, uuid, boolean),
   public.finish_event(text, uuid, text, text),
   public.holds_event_claim(text, uuid),
   public.begin_subscription_read(text, text),
   public.apply_subscription_snapshot(text, integer, uuid, text, jsonb),
   public.list_user_subscriptions(text),
-  public.link_customer(text, text, text, uuid),
+  public.link_customer(text, text, text, uuid, boolean),
   public.find_user_for_customer(text)
   from public, anon, authenticated;
 
 grant execute on function
-  public.claim_event(text, text, uuid),
+  public.claim_event(text, text, uuid, boolean),
   public.finish_event(text, uuid, text, text),
   public.holds_event_claim(text, uuid),
   public.begin_subscription_read(text, text),
   public.apply_subscription_snapshot(text, integer, uuid, text, jsonb),
   public.list_user_subscriptions(text),
-  public.link_customer(text, text, text, uuid),
+  public.link_customer(text, text, text, uuid, boolean),
   public.find_user_for_customer(text)
   to service_role;

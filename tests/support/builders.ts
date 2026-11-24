@@ -18,6 +18,8 @@ export interface SubscriptionOptions {
   start?: number;
   end?: number;
   shape?: Shape;
+  /** Stripe mode of the subscription. Default false (test mode), matching the harness. */
+  livemode?: boolean;
   /** Further items after the first, e.g. an add-on. Same period fields as the first item. */
   extraItems?: Array<{ price: string; product: string; quantity?: number }>;
   /** Mark the embedded item list as incomplete, as Stripe does with `has_more: true`. */
@@ -45,6 +47,7 @@ export function subscription(o: SubscriptionOptions = {}): Record<string, unknow
     id,
     object: 'subscription',
     customer: o.customer ?? 'cus_1',
+    livemode: o.livemode ?? false,
     status,
     cancel_at_period_end: o.cancelAtPeriodEnd ?? false,
     cancel_at: null,

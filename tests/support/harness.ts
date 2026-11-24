@@ -86,6 +86,8 @@ export interface WorkerOptions {
   enabledEvents?: readonly ImplementedEvent[];
   wrapStore?: (store: SyncStore) => SyncStore;
   readOrderShortcut?: boolean;
+  /** Default false: the harness serves test mode, like the builders' events. */
+  livemode?: boolean;
 }
 
 /** One "worker": a route handler with its own DB connection. */
@@ -94,7 +96,14 @@ export function worker(o: WorkerOptions) {
   const handler = createNextWebhookHandler({
     stripe: stripeSdk,
     webhookSecret: WEBHOOK_SECRET,
-    sync: { store, stripe: o.fake, users: o.users, enabledEvents: o.enabledEvents, readOrderShortcut: o.readOrderShortcut },
+    sync: {
+      livemode: o.livemode ?? false,
+      store,
+      stripe: o.fake,
+      users: o.users,
+      enabledEvents: o.enabledEvents,
+      readOrderShortcut: o.readOrderShortcut,
+    },
   });
   return {
     store,
@@ -127,10 +136,10 @@ export async function count(client: pg.Client, table: string): Promise<number> {
   return res.rows[0].n as number;
 }
 
-export async function linkCustomer(client: pg.Client, customerId: string, userId: string): Promise<void> {
+export async function linkCustomer(client: pg.Client, customerId: string, userId: string, livemode = false): Promise<void> {
   await client.query(
-    `insert into public.stripe_customer_links (stripe_customer_id, user_id, linked_by_event) values ($1, $2, 'test-setup')`,
-    [customerId, userId],
+    `insert into public.stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event) values ($1, $2, $3, 'test-setup')`,
+    [customerId, userId, livemode],
   );
 }
 

@@ -46,7 +46,8 @@ You will not absorb every SQL edge case in 15 minutes. You will know which files
    const store = supabaseStore(serviceRoleSupabaseClient); // or postgresStore(pgPool)
    export const POST = createNextWebhookHandler({
      stripe, webhookSecret: process.env.STRIPE_WEBHOOK_SECRET!,
-     sync: { store, stripe: fromStripeSdk(stripe) },
+     // livemode is required: false for a sandbox or test mode, true for live mode.
+     sync: { livemode: false, store, stripe: fromStripeSdk(stripe) },
    });
    ```
 
@@ -97,6 +98,8 @@ Every test except the policy unit tests asserts database state, against a real P
 | A duplicate of a finished event: 200, no effect | `duplicate_event_does_not_apply_twice` |
 | Concurrent deliveries of one event (two connections) apply once | `concurrent_duplicate_deliveries_apply_once` |
 | A duplicate while another worker holds a fresh claim is not acknowledged (409), and no transaction is open during the Stripe call | `duplicate_while_processing_is_not_acknowledged_then_succeeds_after_first_finishes` |
+| An event from the other Stripe mode (`livemode`) is refused with 400 and writes nothing; a fetched subscription, stored row or customer link from the other mode fails the event without changing state | `live_event_is_refused_by_a_test_mode_endpoint`, `test_event_is_refused_by_a_live_mode_endpoint`, `fetched_subscription_from_the_other_mode_fails_without_writing`, `stored_subscription_from_the_other_mode_is_not_overwritten`, `customer_link_from_the_other_mode_is_not_relinked` |
+| A Connect event (`account` set) is recorded as `ignored` and nothing is fetched | `connect_event_is_recorded_as_ignored` |
 | Concurrent first writes create one row | `concurrent_first_insert_creates_one_subscription` |
 | A stale fetch never overwrites a newer committed write | `overlapping_fetches_never_overwrite_a_newer_committed_write` |
 | Default (shortcut off): every subscription event fetches for itself, so a stale read by another event does not stop it converging | `shortcut_off_converges_after_a_stale_read`, `overlapping_fetches_never_overwrite_a_newer_committed_write` |

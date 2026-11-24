@@ -21,20 +21,20 @@ async function as<T>(role: 'anon' | 'authenticated' | 'service_role', userId: st
 
 const insertSub = (id: string, userId: string) =>
   db.query(
-    `insert into public.stripe_subscriptions (subscription_id, user_id, customer_id, status, price_id, product_id,
+    `insert into public.stripe_subscriptions (subscription_id, user_id, customer_id, livemode, status, price_id, product_id,
        current_period_start, current_period_end, items, cancel_at_period_end, revision, read_seq, last_event_id)
-     values ($1, $2, 'cus_' || $1, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', '[{"id":"si_1","price_id":"price_1","product_id":"prod_1"}]', false, 1, 1, 'evt_setup')`,
+     values ($1, $2, 'cus_' || $1, false, 'active', 'price_1', 'prod_1', now(), now() + interval '30 days', '[{"id":"si_1","price_id":"price_1","product_id":"prod_1"}]', false, 1, 1, 'evt_setup')`,
     [id, userId],
   );
 
 const FUNCTIONS = [
-  `public.claim_event('evt_x', 'customer.subscription.created', gen_random_uuid())`,
+  `public.claim_event('evt_x', 'customer.subscription.created', gen_random_uuid(), false)`,
   `public.finish_event('evt_x', gen_random_uuid(), 'succeeded', null)`,
   `public.holds_event_claim('evt_x', gen_random_uuid())`,
   `public.begin_subscription_read('sub_a', 'evt_x')`,
   `public.apply_subscription_snapshot('sub_a', 1, gen_random_uuid(), 'evt_x', '{}'::jsonb)`,
   `public.list_user_subscriptions('${USER_A}')`,
-  `public.link_customer('cus_x', '${USER_B}', 'evt_x', gen_random_uuid())`,
+  `public.link_customer('cus_x', '${USER_B}', 'evt_x', gen_random_uuid(), false)`,
   `public.find_user_for_customer('cus_sub_a')`,
 ];
 
@@ -45,8 +45,8 @@ beforeEach(async () => {
   await truncateAll(db);
   await insertSub('sub_a', USER_A);
   await insertSub('sub_b', USER_B);
-  await db.query(`insert into public.stripe_customer_links values ('cus_sub_a', '${USER_A}', 'evt_setup', now())`);
-  await db.query(`insert into public.stripe_events (event_id, event_type, status) values ('evt_setup', 'x', 'succeeded')`);
+  await db.query(`insert into public.stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event) values ('cus_sub_a', '${USER_A}', false, 'evt_setup')`);
+  await db.query(`insert into public.stripe_events (event_id, event_type, livemode, status) values ('evt_setup', 'x', false, 'succeeded')`);
 });
 afterAll(async () => {
   await db?.end();
@@ -82,8 +82,8 @@ describe('permissions (Supabase roles, shim on plain Postgres)', () => {
     const writes = [
       `update public.stripe_subscriptions set status = 'active', revision = 99 where subscription_id = 'sub_a'`,
       `delete from public.stripe_subscriptions where subscription_id = 'sub_a'`,
-      `insert into public.stripe_customer_links values ('cus_new', '${USER_A}', 'evt_forged', now())`,
-      `insert into public.stripe_events (event_id, event_type, status) values ('evt_forged', 'x', 'succeeded')`,
+      `insert into public.stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event) values ('cus_new', '${USER_A}', false, 'evt_forged')`,
+      `insert into public.stripe_events (event_id, event_type, livemode, status) values ('evt_forged', 'x', false, 'succeeded')`,
     ];
     for (const sql of writes) {
       await expect(as('authenticated', USER_A, () => db.query(sql))).rejects.toThrow(/permission denied/);
@@ -107,7 +107,7 @@ describe('permissions (Supabase roles, shim on plain Postgres)', () => {
 
     // Positive control: service_role can execute the functions and sees every row.
     const claimed = await as('service_role', null, async () => {
-      const r = await db.query(`select public.claim_event('evt_svc', 'customer.subscription.created', gen_random_uuid()) as r`);
+      const r = await db.query(`select public.claim_event('evt_svc', 'customer.subscription.created', gen_random_uuid(), false) as r`);
       const all = await db.query('select count(*)::int as n from public.stripe_subscriptions');
       return { result: r.rows[0].r, rows: all.rows[0].n };
     });

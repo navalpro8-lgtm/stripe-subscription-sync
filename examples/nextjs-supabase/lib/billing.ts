@@ -16,6 +16,17 @@ function env(name: string): string {
   return value;
 }
 
+/** STRIPE_LIVEMODE must be "true" or "false" and match the key: the module refuses the other mode. */
+function livemode(): boolean {
+  const value = env('STRIPE_LIVEMODE');
+  if (value !== 'true' && value !== 'false') throw new Error('STRIPE_LIVEMODE must be "true" or "false"');
+  const keyIsLive = /^(sk|rk)_live_/.test(env('STRIPE_SECRET_KEY'));
+  if ((value === 'true') !== keyIsLive) {
+    throw new Error('STRIPE_LIVEMODE does not match STRIPE_SECRET_KEY');
+  }
+  return value === 'true';
+}
+
 let cached: { stripe: Stripe; store: SyncStore; handler: (req: Request) => Promise<Response> } | undefined;
 
 function billing() {
@@ -29,7 +40,7 @@ function billing() {
     const handler = createNextWebhookHandler({
       stripe,
       webhookSecret: env('STRIPE_WEBHOOK_SECRET'),
-      sync: { store, stripe: fromStripeSdk(stripe), logger: console },
+      sync: { livemode: livemode(), store, stripe: fromStripeSdk(stripe), logger: console },
     });
     cached = { stripe, store, handler };
   }

@@ -12,13 +12,13 @@ import type {
 export type FunctionCaller = (fn: string, args: Record<string, unknown>) => Promise<unknown>;
 
 const CLAIM_RESULTS: readonly ClaimResult[] = ['claimed', 'done', 'busy'];
-const APPLY_RESULTS: readonly ApplyResult[] = ['applied', 'conflict', 'claim_lost', 'tombstoned', 'user_mismatch'];
-const LINK_RESULTS: readonly LinkResult[] = ['linked', 'already_linked', 'mismatch', 'claim_lost'];
+const APPLY_RESULTS: readonly ApplyResult[] = ['applied', 'conflict', 'claim_lost', 'tombstoned', 'user_mismatch', 'mode_mismatch'];
+const LINK_RESULTS: readonly LinkResult[] = ['linked', 'already_linked', 'mismatch', 'mode_mismatch', 'claim_lost'];
 
 export function storeFromFunctions(call: FunctionCaller): SyncStore {
   return {
-    async claimEvent(eventId, eventType, token) {
-      const r = await call('claim_event', { p_event_id: eventId, p_event_type: eventType, p_token: token });
+    async claimEvent(eventId, eventType, token, livemode) {
+      const r = await call('claim_event', { p_event_id: eventId, p_event_type: eventType, p_token: token, p_livemode: livemode });
       return oneOf('claim_event', r, CLAIM_RESULTS);
     },
 
@@ -48,12 +48,13 @@ export function storeFromFunctions(call: FunctionCaller): SyncStore {
       return oneOf('apply_subscription_snapshot', r, APPLY_RESULTS);
     },
 
-    async linkCustomer(customerId, userId, eventId, token) {
+    async linkCustomer(customerId, userId, eventId, token, livemode) {
       const r = await call('link_customer', {
         p_customer_id: customerId,
         p_user_id: userId,
         p_event_id: eventId,
         p_claim_token: token,
+        p_livemode: livemode,
       });
       return oneOf('link_customer', r, LINK_RESULTS);
     },

@@ -12,6 +12,7 @@ create sequence public.stripe_sync_seq;
 create table public.stripe_events (
   event_id     text primary key,
   event_type   text not null,
+  livemode     boolean not null,  -- Stripe mode the event came from; must match SyncDeps.livemode
   status       text not null
                check (status in ('processing', 'succeeded', 'failed', 'skipped', 'ignored')),
   received_seq bigint not null default nextval('public.stripe_sync_seq'),  -- first arrival
@@ -27,6 +28,7 @@ create table public.stripe_events (
 create table public.stripe_customer_links (
   stripe_customer_id text primary key,
   user_id            text not null check (user_id <> ''),
+  livemode           boolean not null,
   linked_by_event    text not null,
   created_at         timestamptz not null default now()
 );
@@ -35,6 +37,7 @@ create table public.stripe_subscriptions (
   subscription_id      text primary key,
   user_id              text not null check (user_id <> ''),
   customer_id          text not null,
+  livemode             boolean not null,
   status               text not null,  -- no CHECK, so a new Stripe status does not break writes
   price_id             text not null,
   product_id           text not null,
@@ -62,7 +65,7 @@ create index stripe_subscriptions_user_id_idx on public.stripe_subscriptions (us
 -- Returns 'claimed', 'done' (already finished: acknowledge) or 'busy' (another worker holds a
 -- fresh claim: do not acknowledge). A failed event, or a claim older than 120 seconds, is taken
 -- over atomically by the ON CONFLICT ... WHERE clause.
-create function public.claim_event(p_event_id text, p_event_type text, p_token uuid)
+create function public.claim_event(p_event_id text, p_event_type text, p_token uuid, p_livemode boolean)
 returns text
 language plpgsql
 set search_path = public
@@ -70,8 +73,8 @@ as $$
 declare
   v_status text;
 begin
-  insert into public.stripe_events as e (event_id, event_type, status, claimed_by, claimed_at, attempts)
-  values (p_event_id, p_event_type, 'processing', p_token, now(), 1)
+  insert into public.stripe_events as e (event_id, event_type, livemode, status, claimed_by, claimed_at, attempts)
+  values (p_event_id, p_event_type, p_livemode, 'processing', p_token, now(), 1)
   on conflict (event_id) do update
     set status = 'processing', claimed_by = excluded.claimed_by, claimed_at = now(),
         attempts = e.attempts + 1, last_error = null, updated_at = now()
@@ -141,8 +144,8 @@ as $$
   left join public.stripe_events e on e.event_id = p_event_id;
 $$;
 
--- Compare-and-swap write. Returns 'applied', 'conflict', 'claim_lost', 'tombstoned' or
--- 'user_mismatch'. Anything but 'applied' writes nothing. One call = one transaction.
+-- Compare-and-swap write. Returns 'applied', 'conflict', 'claim_lost', 'tombstoned',
+-- 'user_mismatch' or 'mode_mismatch' (the stored row is from the other Stripe mode). Anything but 'applied' writes nothing. One call = one transaction.
 -- p_snapshot also carries the read_seq returned by begin_subscription_read.
 create function public.apply_subscription_snapshot(
   p_subscription_id   text,
@@ -158,21 +161,25 @@ as $$
 declare
   v_status   text := p_snapshot->>'status';
   v_user_id  text := p_snapshot->>'user_id';
+  v_livemode boolean := (p_snapshot->>'livemode')::boolean;
   v_existing public.stripe_subscriptions%rowtype;
 begin
   if not public.holds_event_claim(p_event_id, p_claim_token) then
     return 'claim_lost';
+  end if;
+  if v_livemode is null then
+    raise exception 'apply_subscription_snapshot: snapshot.livemode is required';
   end if;
 
   -- Rows are never deleted, so expected_revision > 0 always refers to an existing row and the
   -- insert branch only runs for a first write (revision 1). Concurrent first inserts collide on
   -- the primary key; the loser's WHERE fails against the winner's revision 1: 'conflict'.
   insert into public.stripe_subscriptions as s (
-    subscription_id, user_id, customer_id, status, price_id, product_id, quantity,
+    subscription_id, user_id, customer_id, livemode, status, price_id, product_id, quantity,
     current_period_start, current_period_end, items, cancel_at_period_end,
     cancel_at, canceled_at, ended_at, trial_end, tombstoned_at, revision, read_seq, last_event_id
   ) values (
-    p_subscription_id, v_user_id, p_snapshot->>'customer_id', v_status,
+    p_subscription_id, v_user_id, p_snapshot->>'customer_id', v_livemode, v_status,
     p_snapshot->>'price_id', p_snapshot->>'product_id', (p_snapshot->>'quantity')::integer,
     to_timestamp((p_snapshot->>'current_period_start')::bigint),
     to_timestamp((p_snapshot->>'current_period_end')::bigint),
@@ -202,14 +209,17 @@ begin
         last_event_id = excluded.last_event_id, updated_at = now()
     where s.revision = p_expected_revision
       and s.tombstoned_at is null
-      and s.user_id = excluded.user_id;
+      and s.user_id = excluded.user_id
+      and s.livemode = excluded.livemode;
 
   if found then
     return 'applied';
   end if;
 
   select * into v_existing from public.stripe_subscriptions where subscription_id = p_subscription_id;
-  if v_existing.tombstoned_at is not null then
+  if v_existing.livemode <> v_livemode then
+    return 'mode_mismatch';
+  elsif v_existing.tombstoned_at is not null then
     return 'tombstoned';
   elsif v_existing.revision = p_expected_revision and v_existing.user_id <> v_user_id then
     return 'user_mismatch';
@@ -232,27 +242,32 @@ $$;
 -- ---------------------------------------------------------------- customer links
 
 -- Returns 'linked', 'already_linked', 'mismatch' (customer belongs to another user; nothing
--- changes) or 'claim_lost'.
-create function public.link_customer(p_customer_id text, p_user_id text, p_event_id text, p_claim_token uuid)
+-- changes), 'mode_mismatch' (the stored link is from the other Stripe mode) or 'claim_lost'.
+create function public.link_customer(p_customer_id text, p_user_id text, p_event_id text, p_claim_token uuid, p_livemode boolean)
 returns text
 language plpgsql
 set search_path = public
 as $$
 declare
-  v_user_id text;
+  v_user_id  text;
+  v_livemode boolean;
 begin
   if not public.holds_event_claim(p_event_id, p_claim_token) then
     return 'claim_lost';
   end if;
 
-  insert into public.stripe_customer_links (stripe_customer_id, user_id, linked_by_event)
-  values (p_customer_id, p_user_id, p_event_id)
+  insert into public.stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event)
+  values (p_customer_id, p_user_id, p_livemode, p_event_id)
   on conflict (stripe_customer_id) do nothing;
   if found then
     return 'linked';
   end if;
 
-  select user_id into v_user_id from public.stripe_customer_links where stripe_customer_id = p_customer_id;
+  select user_id, livemode into v_user_id, v_livemode
+    from public.stripe_customer_links where stripe_customer_id = p_customer_id;
+  if v_livemode <> p_livemode then
+    return 'mode_mismatch';
+  end if;
   return case when v_user_id = p_user_id then 'already_linked' else 'mismatch' end;
 end;
 $$;

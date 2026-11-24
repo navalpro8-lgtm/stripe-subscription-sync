@@ -15,7 +15,7 @@ The module never imports this folder, and you do not need it to use the module.
 
 1. **Build the module.** In the repository root, run `npm ci && npm run build`. This example depends on it via `file:../..`.
 2. **Create the tables.** In your Supabase project, run [../../sql/schema.sql](../../sql/schema.sql), then [../../sql/supabase.sql](../../sql/supabase.sql).
-3. **Set the variables.** Copy `.env.example` to `.env.local` and fill it in.
+3. **Set the variables.** Copy `.env.example` to `.env.local` and fill it in. `STRIPE_LIVEMODE` must be `false` for a sandbox or test key and `true` for a live key; the app refuses to start the handler if it does not match the key.
 4. **Start the app.** Run `npm ci && npm run dev`.
 5. **Forward Stripe events.** Run `stripe listen --forward-to localhost:3000/api/stripe/webhook --events checkout.session.completed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,invoice.paid,invoice.payment_failed`, and put the printed `whsec_...` in `STRIPE_WEBHOOK_SECRET`.
 6. **Run a Checkout.** In your app, create a Checkout Session on the server with `client_reference_id` set to the signed-in user's id, and complete it.

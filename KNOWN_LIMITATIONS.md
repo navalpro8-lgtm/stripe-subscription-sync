@@ -28,7 +28,7 @@ Creating Checkout Sessions, setting `client_reference_id`, customer portals and 
 - **A subscription Stripe cannot find (404) fails the event** and is retried until Stripe gives up. There is no special handling.
 - **The claim takeover threshold is a fixed 120 seconds** (in `claim_event`). A worker that runs longer can lose its claim; it then cannot write or mark anything (tested), and the next delivery completes the work.
 - **Once tombstoned, a row never changes again**, including later field corrections Stripe might make to a canceled subscription.
-- **Live and test mode share the tables.** Use separate databases (or schemas) per Stripe mode.
-- **One Stripe account.** Stripe Connect and multiple accounts are not handled.
+- **One Stripe mode per endpoint.** `SyncDeps.livemode` is required. Events, fetched subscriptions, stored rows and customer links from the other mode are refused without writing (tested). Every row stores its `livemode`. Still, use separate databases (or schemas) per mode: `find_user_for_customer` does not filter by mode, and the refusals are a safety net, not a way to share tables.
+- **One Stripe account; Connect is unsupported.** Events with an `account` field (from connected accounts) are recorded as `ignored` with `last_error = 'connect_event_unsupported'`, and nothing is fetched. Multiple Stripe accounts writing to the same tables are not supported: subscription and customer ids are not namespaced by account.
 - **Stripe API versions:** the automated tests use synthetic 2025-03-31.basil and 2025-02-24.acacia shapes (see [fixtures/README.md](fixtures/README.md)). The manual sandbox runs also passed with 2026-09-30.endive events and 2026-10-28.endive subscriptions. Other versions were not checked.
 - **Supabase** has been checked on one real project, manually, including Checkout-driven linking. Data API access with a real user JWT was not exercised; see the README's compatibility table.
