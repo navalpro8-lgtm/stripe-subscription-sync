@@ -34,9 +34,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Packaging smoke test (pack, install in a temp project, import, typecheck)
+        run: node scripts/pack-smoke.mjs
       - name: Example app (typecheck and build; no Stripe or Supabase needed)
         working-directory: examples/nextjs-supabase
         run: |
           npm ci
           npm run typecheck
           npm run build
+
+  # A clean clone with NO DATABASE_URL: the tests start their own embedded Postgres.
+  clean-clone-embedded-postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: No DATABASE_URL is set
+        run: test -z "${DATABASE_URL:-}"
+      - run: npm ci
+      - run: npm run check
