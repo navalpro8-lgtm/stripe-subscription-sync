@@ -18,13 +18,13 @@ const runNpm = (args, cwd) => execFileSync(npm, args.map((a) => (a.includes(' ')
 const EXPECTED_RUNTIME_EXPORTS = [
   'ClaimLostError', 'ConflictRetriesExhaustedError', 'DEFAULT_CLAIM_TIMEOUT_SECONDS', 'DEFAULT_ENABLED_EVENTS',
   'DEFAULT_MAX_BODY_BYTES', 'IMPLEMENTED_EVENTS', 'MAX_CLAIM_TIMEOUT_SECONDS', 'MIN_CLAIM_TIMEOUT_SECONDS', 'MappingError',
-  'MissingFieldError', 'ModeMismatchError', 'OwnerMismatchError', 'RECONCILE_EVENT_TYPE', 'UnlinkedCustomerError',
+  'MissingFieldError', 'ModeMismatchError', 'OwnerMismatchError', 'RECONCILE_EVENT_TYPE', 'StaleReadError', 'UnlinkedCustomerError',
   'createNextWebhookHandler', 'defaultUserResolver', 'exampleEntitlementPolicy', 'fromStripeSdk', 'getEntitlement',
   'isStripeNotFound', 'isValidUserId', 'postgresStore', 'processEvent', 'reconcileCustomer', 'reconcileSubscription',
   'redact', 'resolveEnabledEvents', 'resolveOptions', 'storeFromFunctions', 'supabaseStore', 'toSnapshot',
 ];
 const REQUIRED_FILES = ['package/dist/index.js', 'package/dist/index.d.ts', 'package/sql/schema.sql', 'package/sql/supabase.sql',
-  'package/sql/health.sql', 'package/sql/migrations/0002_v0.2.0.sql', 'package/LICENSE', 'package/README.md'];
+  'package/sql/health.sql', 'package/sql/migrations/0002_v0.2.0_expand.sql', 'package/sql/migrations/0003_v0.2.0_contract.sql', 'package/LICENSE', 'package/README.md'];
 const FORBIDDEN = [/\.env(\.|$)/, /^package\/tests\//, /^package\/examples\//, /^package\/node_modules\//];
 
 const work = await mkdtemp(join(tmpdir(), 'sss-pack-'));

@@ -80,12 +80,32 @@ describe('migrations', () => {
 
     // Without the mode setting, the migration refuses and changes nothing.
     const before = await catalog(upgraded);
-    await expect(upgraded.query(await sql('sql/migrations/0002_v0.2.0.sql'))).rejects.toThrow(/stripe_sync\.livemode/);
+    await expect(upgraded.query(await sql('sql/migrations/0002_v0.2.0_expand.sql'))).rejects.toThrow(/stripe_sync\.livemode/);
     expect(await catalog(upgraded)).toEqual(before);
 
+    // Step 1, expand.
     await upgraded.query(`set stripe_sync.livemode = 'false'`);
-    await upgraded.query(await sql('sql/migrations/0002_v0.2.0.sql'));
-    await upgraded.query(await sql('sql/migrations/0002_v0.2.0_supabase.sql'));
+    await upgraded.query(await sql('sql/migrations/0002_v0.2.0_expand.sql'));
+    await upgraded.query(await sql('sql/migrations/0002_v0.2.0_expand_supabase.sql'));
+
+    // Rollout window: v0.1.0 code (old signatures, snapshot without livemode) still works ...
+    const old = async (text: string) => (await upgraded.query(text)).rows[0].r;
+    const tokenOld = '00000000-0000-4000-8000-0000000000aa';
+    expect(await old(`select public.claim_event('evt_v1', 'customer.subscription.updated', '${tokenOld}') as r`)).toBe('claimed');
+    const v1Snapshot = JSON.stringify({
+      user_id: 'user_old', customer_id: 'cus_old', status: 'past_due', price_id: 'price_2', product_id: 'prod_1', quantity: 1,
+      current_period_start: 1767225600, current_period_end: 1769817600, items: [{ id: 'si_1' }], cancel_at_period_end: false,
+      cancel_at: null, canceled_at: null, ended_at: null, trial_end: null, read_seq: '999',
+    });
+    expect(await old(`select public.apply_subscription_snapshot('sub_old', 1, '${tokenOld}', 'evt_v1', '${v1Snapshot}'::jsonb) as r`)).toBe('applied');
+    expect(await old(`select public.link_customer('cus_v1', 'user_v1', 'evt_v1', '${tokenOld}') as r`)).toBe('linked');
+    // ... and so does v0.2.0 code.
+    const tokenNew = '00000000-0000-4000-8000-0000000000bb';
+    expect(await old(`select public.claim_event('evt_v2', 'invoice.paid', '${tokenNew}', false, 120) as r`)).toBe('claimed');
+    expect(await old(`select public.link_customer('cus_v2', 'user_v2', 'evt_v2', '${tokenNew}', false) as r`)).toBe('linked');
+
+    // Step 2, contract (after v0.2.0 is deployed everywhere).
+    await upgraded.query(await sql('sql/migrations/0003_v0.2.0_contract.sql'));
 
     const a = await catalog(fresh);
     const b = await catalog(upgraded);
@@ -96,23 +116,31 @@ describe('migrations', () => {
     expect(b.relations).toEqual(a.relations);
     expect(b.policies).toEqual(a.policies);
 
-    // Existing rows got the mode, and the upgraded functions work on them.
+    // Every row, old or written during the rollout, has the mode.
     for (const table of ['stripe_events', 'stripe_customer_links', 'stripe_subscriptions']) {
       expect((await upgraded.query(`select distinct livemode from public.${table}`)).rows).toEqual([{ livemode: false }]);
     }
-    const claim = await upgraded.query(`select public.claim_event('evt_new', 'invoice.paid', gen_random_uuid(), false, 120) as r`);
-    expect(claim.rows[0].r).toBe('claimed');
+    expect((await upgraded.query(`select status, revision from public.stripe_subscriptions`)).rows).toEqual([{ status: 'past_due', revision: 2 }]);
+    // After the contract step, a snapshot without livemode is refused.
+    await expect(upgraded.query(`select public.apply_subscription_snapshot('sub_old', 2, '${tokenNew}', 'evt_v2', '${v1Snapshot}'::jsonb)`)).rejects.toThrow(/livemode is required/);
   });
 
-  test('migration_on_an_empty_v0_1_0_database_needs_no_setting', async () => {
-    const empty = await recreate(admin, EMPTY);
+  test('expand_step_changes_no_table_files', async () => {
+    // ADD COLUMN ... NOT NULL DEFAULT <constant> must not rewrite the tables (catalog-only).
+    const db = await recreate(admin, EMPTY);
     try {
-      await empty.query(await sql('sql/migrations/0001_v0.1.0_schema.sql'));
-      await empty.query(await sql('sql/migrations/0002_v0.2.0.sql'));
-      const cols = await empty.query(`select count(*)::int n from information_schema.columns where column_name = 'livemode' and table_schema = 'public'`);
-      expect(cols.rows[0].n).toBe(3);
+      await db.query(await sql('sql/migrations/0001_v0.1.0_schema.sql'));
+      await db.query(`insert into public.stripe_events (event_id, event_type, status) select 'evt_' || g, 'x', 'succeeded' from generate_series(1, 1000) g`);
+      const files = async () => (await db.query(`select relname, relfilenode from pg_class where relname in ('stripe_events', 'stripe_customer_links', 'stripe_subscriptions') order by 1`)).rows;
+      const beforeFiles = await files();
+      await db.query(`set stripe_sync.livemode = 'true'`);
+      await db.query(await sql('sql/migrations/0002_v0.2.0_expand.sql'));
+      expect(await files()).toEqual(beforeFiles);
+      await db.query(await sql('sql/migrations/0003_v0.2.0_contract.sql'));
+      expect(await files()).toEqual(beforeFiles);
+      expect((await db.query(`select count(*)::int n from public.stripe_events where livemode`)).rows[0].n).toBe(1000);
     } finally {
-      await empty.end();
+      await db.end();
       await admin.query(`drop database if exists ${EMPTY}`);
     }
   });

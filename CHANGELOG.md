@@ -9,7 +9,7 @@ Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPG
 **Breaking**
 
 - **Read-order shortcut is off by default.** It is now opt-in (`readOrderShortcut: true`), because it assumes a Stripe read that starts after an event arrived reflects that event. With it off, an event fetches for itself. Under contention, events that used to end as `skipped` now end as `succeeded`, or `failed` for Stripe to retry.
-- **`livemode` columns and option.** A required `livemode boolean` column on `stripe_events`, `stripe_customer_links` and `stripe_subscriptions`, and a required `SyncDeps.livemode`. Run `sql/migrations/0002_v0.2.0.sql`. The SQL functions `claim_event` and `link_customer`, and the `SyncStore` methods `claimEvent` and `linkCustomer`, take the new arguments.
+- **`livemode` columns and option.** A required `livemode boolean` column on `stripe_events`, `stripe_customer_links` and `stripe_subscriptions`, and a required `SyncDeps.livemode`. Upgrade in two steps, `sql/migrations/0002_v0.2.0_expand.sql` and then `0003_v0.2.0_contract.sql`, with no pause in webhook traffic. The SQL functions `claim_event` and `link_customer`, and the `SyncStore` methods `claimEvent` and `linkCustomer`, take the new arguments.
 
 **Added**
 

@@ -1,82 +1,37 @@
--- Migration 0002: v0.1.0 -> v0.2.0. Plain Postgres part; run 0002_v0.2.0_supabase.sql after it on Supabase.
+-- Migration 0002 (expand): v0.1.0 -> v0.2.0, step 1 of 2. Plain Postgres part; on Supabase run
+-- 0002_v0.2.0_expand_supabase.sql after it. Then deploy v0.2.0, then run 0003 (contract).
 --
--- What it does:
---   - adds livemode (not null) to stripe_events, stripe_customer_links and stripe_subscriptions,
---     filling existing rows from the setting stripe_sync.livemode;
---   - replaces claim_event (new livemode and claim-timeout arguments) and link_customer (new
---     livemode argument), and updates the other functions that changed.
+-- No pause is needed: v0.1.0 code keeps working against the database after this step.
+--   - livemode is added to the three tables as NOT NULL with a constant DEFAULT (the Stripe mode
+--     of this database). On Postgres 11+ that is a catalog-only change: no table rewrite or scan,
+--     only a brief lock per table. v0.1.0 code inserts without livemode and gets the default.
+--   - The new claim_event and link_customer signatures are added NEXT TO the old ones.
+--   - apply_subscription_snapshot gets the v0.2.0 body, except that a snapshot without livemode
+--     (sent by v0.1.0 code) uses the default mode. 0003 removes that fallback.
 --
--- Run it in ONE transaction, with webhook traffic paused (v0.1.0 code calls the old function
--- signatures and fails against the new ones; Stripe retries those deliveries). Set the Stripe
--- mode of the existing rows first:
+-- Set the mode first; without it the migration raises an error and changes nothing:
 --
 --   psql "$DATABASE_URL" -1 -v ON_ERROR_STOP=1 \
---     -c "set stripe_sync.livemode = 'false'" -f sql/migrations/0002_v0.2.0.sql
+--     -c "set stripe_sync.livemode = 'false'" -f sql/migrations/0002_v0.2.0_expand.sql
 --
--- 'false' for a sandbox / test-mode database, 'true' for live mode. If the tables hold rows and
--- the setting is missing or invalid, the migration raises an error and changes nothing.
+-- 'false' for a sandbox / test-mode database, 'true' for live mode.
 
-do $$
-begin
-  if (exists (select 1 from public.stripe_events)
-      or exists (select 1 from public.stripe_customer_links)
-      or exists (select 1 from public.stripe_subscriptions))
-     and coalesce(current_setting('stripe_sync.livemode', true), '') not in ('true', 'false') then
-    raise exception 'set stripe_sync.livemode to ''true'' or ''false'' (the Stripe mode of the existing rows) before running this migration';
-  end if;
-end
-$$;
+-- Fail fast instead of queueing behind long transactions (and blocking others behind us).
+set local lock_timeout = '5s';
 
-alter table public.stripe_events add column livemode boolean;
-update public.stripe_events set livemode = current_setting('stripe_sync.livemode', true)::boolean;
-alter table public.stripe_events alter column livemode set not null;
-
-alter table public.stripe_customer_links add column livemode boolean;
-update public.stripe_customer_links set livemode = current_setting('stripe_sync.livemode', true)::boolean;
-alter table public.stripe_customer_links alter column livemode set not null;
-
-alter table public.stripe_subscriptions add column livemode boolean;
-update public.stripe_subscriptions set livemode = current_setting('stripe_sync.livemode', true)::boolean;
-alter table public.stripe_subscriptions alter column livemode set not null;
-
--- Functions whose signature changed: drop the old version (its grants go with it).
-drop function public.claim_event(text, text, uuid);
-drop function public.link_customer(text, text, text, uuid);
-
--- claim_event: as in sql/schema.sql
-create function public.claim_event(
-  p_event_id text, p_event_type text, p_token uuid, p_livemode boolean, p_claim_timeout_seconds integer
-)
-returns text
-language plpgsql
-set search_path = public
-as $$
+do $mig$
 declare
-  v_status text;
+  m text := current_setting('stripe_sync.livemode', true);
 begin
-  if p_claim_timeout_seconds is null or p_claim_timeout_seconds < 1 then
-    raise exception 'claim_event: invalid claim timeout %', p_claim_timeout_seconds;
+  if m is null or m not in ('true', 'false') then
+    raise exception 'set stripe_sync.livemode to ''true'' or ''false'' (the Stripe mode of this database) before running this migration';
   end if;
 
-  insert into public.stripe_events as e (event_id, event_type, livemode, status, claimed_by, claimed_at, attempts)
-  values (p_event_id, p_event_type, p_livemode, 'processing', p_token, now(), 1)
-  on conflict (event_id) do update
-    set status = 'processing', claimed_by = excluded.claimed_by, claimed_at = now(),
-        attempts = e.attempts + 1, last_error = null, updated_at = now()
-    where e.status = 'failed'
-       or (e.status = 'processing' and e.claimed_at < now() - make_interval(secs => p_claim_timeout_seconds))
-  returning e.status into v_status;
+  execute format('alter table public.stripe_events add column livemode boolean not null default %s', m);
+  execute format('alter table public.stripe_customer_links add column livemode boolean not null default %s', m);
+  execute format('alter table public.stripe_subscriptions add column livemode boolean not null default %s', m);
 
-  if found then
-    return 'claimed';
-  end if;
-
-  select e.status into v_status from public.stripe_events e where e.event_id = p_event_id;
-  return case when v_status = 'processing' then 'busy' else 'done' end;
-end;
-$$;
-
--- apply_subscription_snapshot: as in sql/schema.sql
+  execute replace($fn$
 create or replace function public.apply_subscription_snapshot(
   p_subscription_id   text,
   p_expected_revision integer,
@@ -91,7 +46,7 @@ as $$
 declare
   v_status   text := p_snapshot->>'status';
   v_user_id  text := p_snapshot->>'user_id';
-  v_livemode boolean := (p_snapshot->>'livemode')::boolean;
+  v_livemode boolean := coalesce((p_snapshot->>'livemode')::boolean, __MODE__); -- transitional: v0.1.0 code omits it
   v_existing public.stripe_subscriptions%rowtype;
 begin
   if not public.holds_event_claim(p_event_id, p_claim_token) then
@@ -157,8 +112,43 @@ begin
   return 'conflict';
 end;
 $$;
+$fn$, '__MODE__', m);
+end
+$mig$;
 
--- link_customer: as in sql/schema.sql
+-- New signatures, as in sql/schema.sql. The v0.1.0 versions stay until 0003.
+create function public.claim_event(
+  p_event_id text, p_event_type text, p_token uuid, p_livemode boolean, p_claim_timeout_seconds integer
+)
+returns text
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_status text;
+begin
+  if p_claim_timeout_seconds is null or p_claim_timeout_seconds < 1 then
+    raise exception 'claim_event: invalid claim timeout %', p_claim_timeout_seconds;
+  end if;
+
+  insert into public.stripe_events as e (event_id, event_type, livemode, status, claimed_by, claimed_at, attempts)
+  values (p_event_id, p_event_type, p_livemode, 'processing', p_token, now(), 1)
+  on conflict (event_id) do update
+    set status = 'processing', claimed_by = excluded.claimed_by, claimed_at = now(),
+        attempts = e.attempts + 1, last_error = null, updated_at = now()
+    where e.status = 'failed'
+       or (e.status = 'processing' and e.claimed_at < now() - make_interval(secs => p_claim_timeout_seconds))
+  returning e.status into v_status;
+
+  if found then
+    return 'claimed';
+  end if;
+
+  select e.status into v_status from public.stripe_events e where e.event_id = p_event_id;
+  return case when v_status = 'processing' then 'busy' else 'done' end;
+end;
+$$;
+
 create function public.link_customer(p_customer_id text, p_user_id text, p_event_id text, p_claim_token uuid, p_livemode boolean)
 returns text
 language plpgsql
