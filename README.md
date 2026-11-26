@@ -4,6 +4,64 @@ A small module that keeps a database copy of Stripe subscription state correct w
 
 It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)). MIT licensed ([LICENSE](LICENSE)); changes are listed in [CHANGELOG.md](CHANGELOG.md), and [CONTRIBUTING.md](CONTRIBUTING.md) says how to propose one.
 
+**Status:** v0.2.0 (unreleased), 147 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+
+## Who this is for
+
+You take Stripe subscription payments, you keep your own copy of each subscription in Postgres or Supabase (so your app can check "is this user paying?"), and you want that copy to stay correct even when Stripe sends the same webhook twice, sends events out of order, or two handlers run at the same moment.
+
+Not for: Stripe Connect, several Stripe accounts in one database, or creating Checkout Sessions (see [What it does not do](#what-it-does-not-do)).
+
+## Try it first
+
+You need Node 22.12 or newer. You do not need Docker or a Stripe account: the tests start their own throwaway Postgres and use a fake Stripe.
+
+```sh
+git clone https://github.com/navalpro8-lgtm/stripe-subscription-sync
+cd stripe-subscription-sync
+npm ci
+npm run check        # lint, typecheck, 147 tests, build
+```
+
+To watch two of the bad cases on their own:
+
+```sh
+# the same event delivered twice applies once
+npx vitest run -t duplicate_event_does_not_apply_twice
+
+# an old fetch cannot overwrite a newer write
+npx vitest run -t overlapping_fetches_never_overwrite_a_newer_committed_write
+
+# a cancelled subscription cannot be brought back by a late event
+npx vitest run -t deleted_subscription_is_not_resurrected
+```
+
+These tests check the database, not just the HTTP status. If a run fails on your machine, please tell me which command, your Node version and your OS.
+
+## How it works, in six steps
+
+1. Check the Stripe signature on the raw request body. Bad signature: 400, nothing written.
+2. Record the event id once. A repeat is answered 200 and does nothing. If a worker crashed halfway, the next delivery picks the event up again.
+3. Treat the event only as a hint about which subscription changed. Fetch that subscription from Stripe again.
+4. Write the fetched state with a per-row `revision` check, so two handlers cannot overwrite each other.
+5. When a subscription is cancelled, keep the row as a tombstone that later stale events cannot undo.
+6. If events were lost for good, call `reconcileSubscription` or `reconcileCustomer` to repair the row. You call these yourself; nothing runs them for you.
+
+The full model is in [docs/SYNC_MODEL.md](docs/SYNC_MODEL.md).
+
+## Please review it
+
+I am looking for a few developers to run this and tell me where it is confusing or wrong. I am not asking for stars. Negative feedback is as useful as positive.
+
+The things I would most like checked:
+
+- **The concurrent-handler case** ([tests/concurrency.test.ts](tests/concurrency.test.ts)) is the part I trust least. Is the revision check enough when two handlers run at the same moment?
+- **Setup:** could you get from clone to a passing `npm run check`? Where did you get stuck?
+- **The reading map below:** is it clear which files to read first?
+- **Environments I have not tried:** self-hosted Supabase, Postgres versions other than 17, edge runtimes, macOS. See [Compatibility](#compatibility).
+
+To report anything, open an issue on this repository.
+
 ## What it does
 
 - **Verify and record:** verifies the webhook signature on the raw body, then records each event once in `stripe_events` with a claim, so duplicates and concurrent deliveries apply once and a crashed worker's event is picked up again.
