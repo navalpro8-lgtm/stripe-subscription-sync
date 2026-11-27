@@ -2,7 +2,7 @@
 
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/); before 1.0.0, a minor version may contain breaking changes.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-27)
 
 Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPGRADING.md).
 
@@ -30,7 +30,7 @@ Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPG
 - **Load test:** labelled synthetic. It reports both shortcut modes and waits for in-flight requests between scenarios.
 - **Maintainer docs:** `PLAN.md` moved to `docs/maintainers/`.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-23)
 
 First public version.
 

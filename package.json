@@ -1,6 +1,6 @@
 {
   "name": "stripe-subscription-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keeps a database copy of Stripe subscription state correct under duplicate, reordered and concurrent webhook deliveries.",
   "license": "MIT",
   "keywords": [

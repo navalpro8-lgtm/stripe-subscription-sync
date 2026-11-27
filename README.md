@@ -4,7 +4,7 @@ A small module that keeps a database copy of Stripe subscription state correct w
 
 It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)). MIT licensed ([LICENSE](LICENSE)); changes are listed in [CHANGELOG.md](CHANGELOG.md), and [CONTRIBUTING.md](CONTRIBUTING.md) says how to propose one.
 
-**Status:** v0.2.0 (unreleased), 147 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+**Status:** v0.2.0, 147 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Who this is for
 
