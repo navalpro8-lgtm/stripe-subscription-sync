@@ -6,6 +6,14 @@
 // events signed with a local test secret. No Stripe or Supabase account is touched.
 //
 //   npm run build && npm i --no-save autocannon@8.0.0 && node bench/load-test.mjs
+//   node bench/load-test.mjs --lock-comparison-only    # only scenario D below
+//
+// Scenario D compares two ways to handle one hot subscription while 50 others also get events:
+//   - cas: the library as shipped (compare-and-swap on revision, retry on conflict);
+//   - advisory_lock: THIS SCRIPT ONLY, not in the library. Each request takes a per-subscription
+//     pg_advisory_lock on a pool connection, holds it across the whole event (Stripe fetch
+//     included), and runs the event on that same connection.
+// Idea for the comparison: Sunnatulla, dev.to.
 //
 // Each scenario checks database invariants afterwards, not only throughput:
 //   - every 'succeeded' subscription event applied exactly one write (sum of revisions);
@@ -48,7 +56,25 @@ if (process.argv[2] === '--server') {
       return s;
     },
   };
-  const handler = createNextWebhookHandler({ stripe, webhookSecret: SECRET, sync: { livemode: false, store: postgresStore(pool), stripe: retriever, readOrderShortcut: process.env.READ_ORDER_SHORTCUT === '1' } });
+  const sync = (store) => ({ livemode: false, store, stripe: retriever, readOrderShortcut: process.env.READ_ORDER_SHORTCUT === '1' });
+  const casHandler = createNextWebhookHandler({ stripe, webhookSecret: SECRET, sync: sync(postgresStore(pool)) });
+  // Lock variant (bench only). The subscription id is read from the unverified body to pick the
+  // lock key; the handler still verifies the signature before doing anything else.
+  const lockHandler = async (request, body) => {
+    const id = String(JSON.parse(body)?.data?.object?.id ?? '');
+    const conn = await pool.connect(); // a waiter holds this connection while it waits
+    try {
+      await conn.query('select pg_advisory_lock(hashtextextended($1, 0))', [id]);
+      try {
+        return await createNextWebhookHandler({ stripe, webhookSecret: SECRET, sync: sync(postgresStore(conn)) })(request);
+      } finally {
+        await conn.query('select pg_advisory_unlock(hashtextextended($1, 0))', [id]);
+      }
+    } finally {
+      conn.release();
+    }
+  };
+  const handler = process.env.LOCK_VARIANT === '1' ? lockHandler : casHandler;
 
   http.createServer((req, res) => {
     let body = '';
@@ -67,7 +93,7 @@ if (process.argv[2] === '--server') {
       if (req.headers['stripe-signature']) headers['stripe-signature'] = req.headers['stripe-signature'];
       inflight++;
       try {
-        const r = await handler(new Request('http://localhost/webhook', { method: 'POST', headers, body }));
+        const r = await handler(new Request('http://localhost/webhook', { method: 'POST', headers, body }), body);
         res.writeHead(r.status, { 'content-type': 'application/json' });
         res.end(await r.text());
       } finally {
@@ -94,15 +120,27 @@ async function main() {
   await client.connect();
   await client.query(await readFile('sql/schema.sql', 'utf8'));
 
-  const results = [];
-  for (const shortcut of [false, true]) {
+  const withServer = async (env, fn) => {
     const server = fork(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), ['--server'], {
-      env: { ...process.env, DATABASE_URL: url, PORT: String(appPort), READ_ORDER_SHORTCUT: shortcut ? '1' : '0' },
+      env: { ...process.env, DATABASE_URL: url, PORT: String(appPort), ...env },
     });
     await new Promise((r) => server.once('message', r));
-    await scenarios(`http://127.0.0.1:${appPort}`, client, shortcut ? 'shortcut_on' : 'shortcut_off', results);
+    await fn(`http://127.0.0.1:${appPort}`);
     server.kill();
     await new Promise((r) => server.once('exit', r));
+  };
+
+  const results = [];
+  if (!process.argv.includes('--lock-comparison-only')) {
+    for (const shortcut of [false, true]) {
+      await withServer({ READ_ORDER_SHORTCUT: shortcut ? '1' : '0', LOCK_VARIANT: '0' }, (base) =>
+        scenarios(base, client, shortcut ? 'shortcut_on' : 'shortcut_off', results));
+    }
+  }
+  // Scenario D: same setup for both variants, shortcut off.
+  for (const variant of ['cas', 'advisory_lock']) {
+    await withServer({ READ_ORDER_SHORTCUT: '0', LOCK_VARIANT: variant === 'advisory_lock' ? '1' : '0' }, (base) =>
+      lockComparison(base, client, variant, results));
   }
   console.log(JSON.stringify(results, null, 2));
   await client.end();
@@ -199,13 +237,85 @@ async function scenarios(base, client, mode, results) {
   results.at(-1).finalRowsMatchStripe = subsC.length === 50 && subsC.every((s) => s.price_id === 'price_final');
 }
 
-async function waitIdle(base) {
+// D) One hot subscription (100 connections) and 50 other subscriptions (50 connections), at the
+// same time, 10 s, pool of 20, fake Stripe 20–80 ms. Run once per variant (see the header).
+// "totalMs" is from the start of the load until the server has finished every request.
+async function lockComparison(base, client, variant, results) {
+  const { default: autocannon } = await import('autocannon');
+  const setStripe = (subs) => fetch(`${base}/stripe-state`, { method: 'POST', body: JSON.stringify(subs) });
+  const sign = (evt) => {
+    const payload = JSON.stringify(evt);
+    return { payload, headers: { 'content-type': 'application/json', 'stripe-signature': stripe.webhooks.generateTestHeaderString({ payload, secret: SECRET }) } };
+  };
+  const event = (id, objectId) => ({ id, object: 'event', type: 'customer.subscription.updated', created: T0, livemode: false, data: { object: { id: objectId } } });
+  const post = (id, objectId) => (req) => {
+    const { payload, headers } = sign(event(id, objectId));
+    return { ...req, method: 'POST', body: payload, headers };
+  };
+
+  await client.query('truncate stripe_events, stripe_customer_links, stripe_subscriptions');
+  await client.query(`insert into stripe_customer_links (stripe_customer_id, user_id, livemode, linked_by_event) values ($1, $2, false, 'load-setup')`, [CUSTOMER, USER]);
+  const others = Array.from({ length: 50 }, (_, i) => `sub_other_${i}`);
+  await setStripe([subscription('sub_hot', 'price_0'), ...others.map((id) => subscription(id, 'price_a'))]);
+
+  let seqHot = 0;
+  let seqOther = 0;
+  let price = 0;
+  const pending = [];
+  const started = Date.now();
+  const [hot, other] = await Promise.all([
+    autocannon({ url: `${base}/webhook`, connections: 100, duration: 10, requests: [{ setupRequest: (req) => {
+      if (++seqHot % 200 === 0) pending.push(setStripe([subscription('sub_hot', `price_${++price}`)]));
+      return post(`evt_hot_${variant}_${seqHot}`, 'sub_hot')(req);
+    } }] }),
+    autocannon({ url: `${base}/webhook`, connections: 50, duration: 10, requests: [{ setupRequest: (req) => {
+      const id = others[seqOther % others.length];
+      return post(`evt_other_${variant}_${++seqOther}`, id)(req);
+    } }] }),
+  ]);
+  const drainMs = await waitIdle(base, 600_000);
+  const totalMs = Date.now() - started;
+
+  // Settle as in A–C: one more serial event per subscription; each row must end at Stripe's state.
+  await Promise.all(pending);
+  await setStripe([subscription('sub_hot', 'price_final'), ...others.map((id) => subscription(id, 'price_final'))]);
+  for (const id of ['sub_hot', ...others]) {
+    const { payload, headers } = sign(event(`evt_settle_${variant}_${id}`, id));
+    await fetch(`${base}/webhook`, { method: 'POST', headers, body: payload });
+  }
+  await waitIdle(base);
+
+  const byStatus = async (prefix) => Object.fromEntries((await client.query(
+    `select status, count(*)::int n from stripe_events where starts_with(event_id, $1) group by 1 order by 1`, [prefix])).rows.map((r) => [r.status, r.n]));
+  const subs = (await client.query(`select subscription_id, price_id, revision from stripe_subscriptions order by 1`)).rows;
+  const succeededSubEvents = (await client.query(
+    `select count(*)::int n from stripe_events where status = 'succeeded' and event_type like 'customer.subscription.%'`)).rows[0].n;
+  const sumRevisions = subs.reduce((a, s) => a + s.revision, 0);
+  const codes = (r) => Object.fromEntries(Object.entries(r.statusCodeStats ?? {}).map(([k, v]) => [k, v.count]));
+  const hotEvents = await byStatus(`evt_hot_${variant}_`);
+  const otherEvents = await byStatus(`evt_other_${variant}_`);
+  results.push({
+    mode: variant,
+    scenario: 'D_hot_plus_50_others',
+    totalMs,
+    drainMs,
+    hot: { requests: hot.requests.total, statusCodes: codes(hot), timeouts: hot.timeouts, latencyMs: { p50: hot.latency.p50, p99: hot.latency.p99 }, events: hotEvents,
+      failed: hotEvents.failed ?? 0 },
+    others: { requests: other.requests.total, statusCodes: codes(other), timeouts: other.timeouts, latencyMs: { p50: other.latency.p50, p99: other.latency.p99 }, events: otherEvents,
+      writesCompleted: otherEvents.succeeded ?? 0 },
+    invariant_oneWritePerSucceededEvent: { succeededSubEvents, sumRevisions, ok: succeededSubEvents === sumRevisions },
+    stuckProcessing: (await client.query(`select count(*)::int n from stripe_events where status = 'processing'`)).rows[0].n,
+    finalRowsMatchStripe: subs.length === 51 && subs.every((s) => s.price_id === 'price_final'),
+  });
+}
+
+async function waitIdle(base, limitMs = 30_000) {
   const start = Date.now();
-  while (Date.now() - start < 30_000) {
+  while (Date.now() - start < limitMs) {
     if ((await (await fetch(`${base}/inflight`)).text()) === '0') return Date.now() - start;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error('server still busy after 30 s');
+  throw new Error(`server still busy after ${limitMs / 1000} s`);
 }
 
 function freePort() {

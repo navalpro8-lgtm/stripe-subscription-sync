@@ -332,6 +332,8 @@ How to read this:
 - **With the shortcut off,** a subscription hammered by many events at once leaves many events `failed`. Stripe redelivers them later. Each row still ended at Stripe's state.
 - **Real-world relevance:** these numbers say nothing about real Stripe latency or read freshness, Supabase, or a deployed server.
 
+Scenario D runs a hot subscription and 50 others at the same time, once as shipped and once with a per-subscription advisory lock that exists only in the bench script. Results: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
+
 ## Supabase notes
 
 - [sql/supabase.sql](sql/supabase.sql) enables RLS on all three tables, revokes everything, then grants explicitly. `authenticated` gets `SELECT` on its own `stripe_subscriptions` rows. Only `service_role` gets writes, function `EXECUTE` and use of the `stripe_sync_seq` sequence. No function is `SECURITY DEFINER`, and every function has a fixed `search_path`.
