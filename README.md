@@ -45,7 +45,7 @@ These tests check the database, not just the HTTP status. If a run fails on your
 3. Treat the event only as a hint about which subscription changed. Fetch that subscription from Stripe again.
 4. Write the fetched state with a per-row `revision` check, so two handlers cannot overwrite each other.
 5. When a subscription is cancelled, keep the row as a tombstone that later stale events cannot undo.
-6. If events were lost for good, call `reconcileSubscription` or `reconcileCustomer` to repair the row. You call these yourself; nothing runs them for you.
+6. If events were lost for good, call `reconcileSubscription`, `reconcileCustomer` or `reconcileRecent` to repair the row. You call these yourself; nothing runs them for you. See [Run reconcile on a schedule](#run-reconcile-on-a-schedule).
 
 The full model is in [docs/SYNC_MODEL.md](docs/SYNC_MODEL.md).
 
@@ -70,7 +70,7 @@ To report anything, open an issue on this repository.
 - **Link customers to users:** links a Stripe customer to your user id from `checkout.session.completed` (`client_reference_id`).
 - **Entitlement on read:** computes a user's entitlement when it is read, from their rows, with a policy you own.
 - **One Stripe mode per endpoint:** `livemode` is required; anything from the other mode is refused without writing.
-- **Reconcile on demand:** `reconcileSubscription` / `reconcileCustomer` repair drift through the same write path. You call them; see [docs/RUNBOOK.md](docs/RUNBOOK.md).
+- **Reconcile on demand:** `reconcileSubscription` / `reconcileCustomer` / `reconcileRecent` repair drift through the same write path. You call them; see [docs/RUNBOOK.md](docs/RUNBOOK.md) and [Run reconcile on a schedule](#run-reconcile-on-a-schedule).
 - **Operable:** one structured, redacted log line per delivery, read-only health queries in [sql/health.sql](sql/health.sql), and a request body limit.
 
 ## What it does not do
@@ -85,7 +85,7 @@ You will not absorb every SQL edge case in 15 minutes. You will know which files
 |---|---|---|
 | 1 | This README, then [docs/SYNC_MODEL.md](docs/SYNC_MODEL.md) | The algorithm in under 50 lines |
 | 2 | [src/core/process-event.ts](src/core/process-event.ts) | `processEvent()`, the three handlers, the retry loop, payload mapping, logging |
-| 2b | [src/core/reconcile.ts](src/core/reconcile.ts) | `reconcileSubscription()` / `reconcileCustomer()` on the same write path |
+| 2b | [src/core/reconcile.ts](src/core/reconcile.ts) | `reconcileSubscription()` / `reconcileCustomer()` / `reconcileRecent()` on the same write path |
 | 3 | [src/core/types.ts](src/core/types.ts) | Every interface the core depends on (all injected) |
 | 4 | [src/policy/entitlements.ts](src/policy/entitlements.ts) | The EXAMPLE entitlement policy and `getEntitlement()` |
 | 5 | [src/adapters/sql-functions.ts](src/adapters/sql-functions.ts) + [sql/schema.sql](sql/schema.sql) | The store, and the SQL functions where the atomicity lives |
@@ -180,6 +180,64 @@ Events keep verifying throughout, because each one is signed with both secrets. 
 - **Body limit:** the route rejects bodies over `maxBodyBytes` (default 1 MiB) with 413, before signature verification, and stops reading at the limit. Stripe does not document a maximum event size. Your host may have its own limit.
 - **Retention:** see [docs/RETENTION.md](docs/RETENTION.md) before deleting any rows.
 
+## Run reconcile on a schedule
+
+Nothing in this repo schedules reconciliation. If a webhook is lost for good (your endpoint was down past Stripe's retry window, or the event was disabled), the row stays wrong until you reconcile it. You have to run that yourself.
+
+`reconcileRecent({ since }, deps)` lists Stripe's `customer.subscription.*` events created since `since`, takes each subscription once, and reconciles it. It returns `checked`, `updated`, `unchanged` and `failed` counts, plus `truncated` and one result per subscription.
+
+- `updated`: Stripe differed from the row (or there was no row), so the row was written.
+- `unchanged`: the row already matched Stripe, or is a tombstone. Nothing was written.
+- `failed`: see `results[i].reason`. One failure does not stop the others.
+
+Limits:
+
+- Stripe keeps events for about 30 days. A `since` older than that misses older changes; use `reconcileCustomer` for those.
+- Each subscription costs one Stripe fetch, plus one list call per 100 events.
+- It stops after `maxSubscriptions` (default 1000) and sets `truncated`.
+- Needs `events.list` on the Stripe client: `fromStripeSdk(new Stripe(key))` provides it.
+
+Example for the [Next.js example app](examples/nextjs-supabase): an hourly Vercel Cron job that looks back two hours, so a missed run is covered by the next. Any scheduler that can send an authenticated HTTP request works the same way. Check your host's limits on how often a cron can run.
+
+Add to `lib/billing.ts` (and import `reconcileRecent` from `stripe-subscription-sync`):
+
+```ts
+/** Reconciles every subscription Stripe has an event for in the last two hours. */
+export function reconcileLastTwoHours() {
+  const { stripe, store } = billing();
+  return reconcileRecent(
+    { since: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    { livemode: livemode(), store, stripe: fromStripeSdk(stripe), logger: console },
+  );
+}
+```
+
+`app/api/cron/reconcile/route.ts`:
+
+```ts
+import { reconcileLastTwoHours } from '../../../../lib/billing';
+
+export const runtime = 'nodejs';
+
+// Vercel Cron sends "Authorization: Bearer <CRON_SECRET>" when CRON_SECRET is set.
+export async function GET(req: Request) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
+    return new Response('unauthorized', { status: 401 });
+  }
+  const { checked, updated, unchanged, failed, truncated } = await reconcileLastTwoHours();
+  return Response.json({ checked, updated, unchanged, failed, truncated }, { status: failed > 0 ? 500 : 200 });
+}
+```
+
+`vercel.json`:
+
+```json
+{ "crons": [{ "path": "/api/cron/reconcile", "schedule": "0 * * * *" }] }
+```
+
+This example typechecks against the example app. It has not been run on Vercel or against real Stripe.
+
 ## Guarantees, and the test for each
 
 Every test except the policy unit tests asserts database state, against a real Postgres.
@@ -211,6 +269,7 @@ Every test except the policy unit tests asserts database state, against a real P
 | A v0.1.0 database upgraded with `sql/migrations/0002` (expand) and `0003` (contract) ends identical to a fresh install; v0.1.0 and v0.2.0 calls both work in between; neither step rewrites a table (plain Postgres) | `upgrade_from_v0_1_0_matches_a_fresh_install`, `expand_step_changes_no_table_files` |
 | Reconcile repairs drift, respects tombstones, and is safe alongside a live event in either commit order | `reconcile_repairs_drift`, `reconcile_respects_tombstone`, `reconcile_concurrent_with_live_event_webhook_commits_first`, `reconcile_concurrent_with_live_event_reconcile_commits_first` |
 | Reconcile failures are typed results and write nothing; `reconcileCustomer` pages and reports truncation | `reconcile_returns_typed_failures_without_writing`, `reconcile_customer_pages_through_subscriptions` |
+| `reconcileRecent` fixes a subscription whose webhook never arrived, writes nothing for one already up to date, reads every page of events, and counts a failure without stopping | `reconcile_recent_fixes_subscription_whose_webhook_never_arrived`, `reconcile_recent_leaves_up_to_date_subscription_alone`, `reconcile_recent_handles_more_than_one_page`, `reconcile_recent_counts_a_failure_and_continues`, `stripe_adapter_lists_subscription_events_with_events_list` |
 | Secrets, keys, JWTs and emails in payloads or error messages never reach logs or `last_error` | `canaries_never_reach_logs_or_last_error` |
 | One structured log line per delivery, with a correlation id stored on failures | `every_delivery_logs_one_structured_line`, `failed_event_stores_its_correlation_id` |
 | Oversized bodies get 413 and write nothing, with or without `Content-Length` | `oversized_body_gets_413_and_writes_nothing` |

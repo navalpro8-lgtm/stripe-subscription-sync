@@ -43,6 +43,12 @@ export type ReconcileResult =
  * because the write path requires a claim.
  */
 export async function reconcileSubscription(subscriptionId: string, deps: SyncDeps): Promise<ReconcileResult> {
+  // Without skipUnchanged the outcome is never 'unchanged'.
+  return (await reconcileOne(subscriptionId, deps, false)) as ReconcileResult;
+}
+
+/** reconcileSubscription(), plus (skipUnchanged) no write when Stripe matches the stored row. */
+async function reconcileOne(subscriptionId: string, deps: SyncDeps, skipUnchanged: boolean): Promise<ReconcileRecentItem> {
   if (typeof subscriptionId !== 'string' || subscriptionId === '') throw new Error('reconcileSubscription: subscriptionId is required');
   const options = resolveOptions(deps);
   const correlationId = globalThis.crypto.randomUUID();
@@ -58,16 +64,16 @@ export async function reconcileSubscription(subscriptionId: string, deps: SyncDe
     token, deps, options, users: deps.users ?? defaultUserResolver, log, attempts: 0,
   };
 
-  let result: ReconcileResult;
+  let result: ReconcileRecentItem;
   try {
-    const outcome = await syncSubscription(c, subscriptionId, { mustBeTerminal: false, allowShortcut: false });
-    result = { subscriptionId, outcome: outcome === 'tombstoned' ? 'tombstoned' : 'applied', correlationId };
+    const outcome = await syncSubscription(c, subscriptionId, { mustBeTerminal: false, allowShortcut: false, skipUnchanged });
+    result = { subscriptionId, outcome: outcome === 'tombstoned' || outcome === 'unchanged' ? outcome : 'applied', correlationId };
   } catch (err) {
     result = { subscriptionId, outcome: 'failed', reason: classify(err), error: errorMessage(err), correlationId };
   }
 
   if (!(result.outcome === 'failed' && result.reason === 'claim_lost')) {
-    const status = result.outcome === 'applied' ? 'succeeded' : result.outcome === 'tombstoned' ? 'skipped' : 'failed';
+    const status = result.outcome === 'applied' || result.outcome === 'unchanged' ? 'succeeded' : result.outcome === 'tombstoned' ? 'skipped' : 'failed';
     const finished = await deps.store.finishEvent(eventId, token, status, result.outcome === 'failed' ? result.error : null);
     if (!finished) result = { subscriptionId, outcome: 'failed', reason: 'claim_lost', error: `Claim on ${eventId} was taken over`, correlationId };
   }
@@ -138,4 +144,80 @@ export async function reconcileCustomer(
     }
   }
   return { customerId, results, truncated: hasMore };
+}
+
+export interface ReconcileRecentOptions {
+  /** Reconcile subscriptions that have a `customer.subscription.*` event created at or after this time. */
+  since: Date;
+  /** Stop after this many distinct subscriptions (default 1000, at most 10000); `truncated` says so. */
+  maxSubscriptions?: number;
+}
+
+/** One subscription's result in reconcileRecent(). 'unchanged': Stripe matched the row; nothing written. */
+export type ReconcileRecentItem = ReconcileResult | { subscriptionId: string; outcome: 'unchanged'; correlationId: string };
+
+export interface ReconcileRecentResult {
+  /** Distinct subscriptions reconciled. Equals updated + unchanged + failed. */
+  checked: number;
+  /** Rows written because Stripe differed from the database (or there was no row yet). */
+  updated: number;
+  /** Rows left as they were: Stripe matched them, or they are tombstones. */
+  unchanged: number;
+  /** Subscriptions whose reconcile returned outcome 'failed'. See `results` for the reason. */
+  failed: number;
+  /** True if more than maxSubscriptions subscriptions had events; run again or raise the limit. */
+  truncated: boolean;
+  results: ReconcileRecentItem[];
+}
+
+/**
+ * Lists Stripe's `customer.subscription.*` events created since `opts.since` (cursor-paged),
+ * takes each distinct subscription id once, and reconciles each one in turn. Stripe keeps events
+ * for about 30 days, so a `since` older than that misses older changes. Needs
+ * `listSubscriptionEvents` on the retriever (fromStripeSdk provides it when given `events`).
+ * A Stripe error while listing is thrown before anything is reconciled. Nothing here schedules
+ * it: call it from your own cron or scheduled job.
+ */
+export async function reconcileRecent(opts: ReconcileRecentOptions, deps: SyncDeps): Promise<ReconcileRecentResult> {
+  const list = deps.stripe.listSubscriptionEvents?.bind(deps.stripe);
+  if (!list) throw new Error('reconcileRecent: the SubscriptionRetriever has no listSubscriptionEvents');
+  if (!(opts?.since instanceof Date) || Number.isNaN(opts.since.getTime())) throw new Error('reconcileRecent: since must be a valid Date');
+  const max = opts.maxSubscriptions ?? 1000;
+  if (!Number.isInteger(max) || max < 1 || max > 10_000) throw new Error('reconcileRecent: maxSubscriptions must be an integer from 1 to 10000');
+  resolveOptions(deps);
+  const since = Math.floor(opts.since.getTime() / 1000);
+
+  // List first, then reconcile: a subscription with events on several pages is reconciled once.
+  const ids = new Set<string>();
+  let startingAfter: string | undefined;
+  let hasMore = true;
+  let truncated = false;
+  while (hasMore && !truncated) {
+    const page = (await list(since, startingAfter)) as { data?: Array<{ id?: unknown; data?: { object?: { id?: unknown } } }>; has_more?: unknown } | null;
+    const data = Array.isArray(page?.data) ? page.data : [];
+    hasMore = page?.has_more === true;
+    if (data.length === 0 && hasMore) throw new Error('reconcileRecent: empty event page with has_more');
+    for (const evt of data) {
+      const subscriptionId = evt.data?.object?.id;
+      if (typeof evt.id !== 'string' || typeof subscriptionId !== 'string') throw new Error('reconcileRecent: event without id or data.object.id');
+      if (!ids.has(subscriptionId) && ids.size >= max) {
+        truncated = true;
+        break;
+      }
+      ids.add(subscriptionId);
+      startingAfter = evt.id;
+    }
+  }
+
+  const results: ReconcileRecentItem[] = [];
+  for (const id of ids) results.push(await reconcileOne(id, deps, true));
+  const n = (outcome: string) => results.filter((r) => r.outcome === outcome).length;
+  return {
+    checked: results.length,
+    updated: n('applied'),
+    unchanged: n('unchanged') + n('tombstoned'),
+    failed: n('failed'),
+    truncated,
+    results,
+  };
 }

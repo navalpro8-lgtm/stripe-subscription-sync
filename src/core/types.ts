@@ -103,6 +103,12 @@ export interface SubscriptionRetriever {
    * list object (`{ data: [{ id, ... }], has_more }`).
    */
   listCustomerSubscriptions?(customerId: string, startingAfter?: string): Promise<unknown>;
+  /**
+   * Optional, used only by reconcileRecent(). One page of `customer.subscription.*` events
+   * created at or after `since` (unix seconds), after `startingAfter` (an event id; absent for the
+   * first page), as a Stripe list object (`{ data: [{ id, data: { object: { id } } }], has_more }`).
+   */
+  listSubscriptionEvents?(since: number, startingAfter?: string): Promise<unknown>;
 }
 
 export type ClaimResult = 'claimed' | 'done' | 'busy';

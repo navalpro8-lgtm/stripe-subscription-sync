@@ -26,6 +26,7 @@ import type {
   Logger,
   ProcessResult,
   Snapshot,
+  StoredSubscription,
   StripeEventLike,
   SyncDeps,
   UserResolver,
@@ -65,7 +66,7 @@ export interface Context {
 }
 
 /** @internal What one compare-and-swap loop ended with. */
-export type SyncOutcome = 'applied' | 'tombstoned' | 'covered';
+export type SyncOutcome = 'applied' | 'tombstoned' | 'covered' | 'unchanged';
 
 type Handler = (c: Context) => Promise<'succeeded' | 'skipped'>;
 
@@ -165,7 +166,7 @@ export async function processEvent(event: StripeEventLike, deps: SyncDeps): Prom
 export async function syncSubscription(
   c: Context,
   subscriptionId: string,
-  o: { mustBeTerminal: boolean; allowShortcut?: boolean },
+  o: { mustBeTerminal: boolean; allowShortcut?: boolean; skipUnchanged?: boolean },
 ): Promise<SyncOutcome> {
   const { store, stripe } = c.deps;
   const shortcut = c.options.readOrderShortcut && (o.allowShortcut ?? true) && !o.mustBeTerminal;
@@ -203,6 +204,15 @@ export async function syncSubscription(
 
     const userId = await c.users.userForSubscription({ id: subscriptionId, customerId: fetched.customer_id }, store);
     const snapshot: Snapshot = { ...fetched, user_id: userId, read_seq: read.readSeq };
+    if (o.skipUnchanged && read.revision > 0) {
+      // reconcileRecent() only: if the row still has the revision read above and holds what
+      // Stripe just returned, write nothing. Any other case goes through applySnapshot as usual.
+      const stored = (await store.listSubscriptionsForUser(userId)).find((s) => s.subscription_id === subscriptionId);
+      if (stored && Number(stored.revision) === read.revision && stored.tombstoned_at === null && sameAsStored(stored, snapshot)) {
+        c.log.info('stripe_sync.reconcile_unchanged', { eventId: c.event.id, subscriptionId });
+        return 'unchanged';
+      }
+    }
     const result = await store.applySnapshot(subscriptionId, read.revision, c.token, c.event.id, snapshot);
 
     switch (result) {
@@ -352,6 +362,41 @@ export function toSnapshot(raw: unknown, subscriptionId: string): Omit<Snapshot,
     ended_at: num(sub.ended_at),
     trial_end: num(sub.trial_end),
   };
+}
+
+/** True if the stored row holds every stored field of `snapshot` (read_seq aside). */
+function sameAsStored(stored: StoredSubscription, snap: Snapshot): boolean {
+  const secs = (iso: string | null) => (iso === null ? null : Math.floor(Date.parse(iso) / 1000));
+  const items = Array.isArray(stored.items) ? stored.items : [];
+  return (
+    stored.user_id === snap.user_id &&
+    stored.customer_id === snap.customer_id &&
+    stored.livemode === snap.livemode &&
+    stored.status === snap.status &&
+    stored.price_id === snap.price_id &&
+    stored.product_id === snap.product_id &&
+    stored.quantity === snap.quantity &&
+    secs(stored.current_period_start) === snap.current_period_start &&
+    secs(stored.current_period_end) === snap.current_period_end &&
+    stored.cancel_at_period_end === snap.cancel_at_period_end &&
+    secs(stored.cancel_at) === snap.cancel_at &&
+    secs(stored.canceled_at) === snap.canceled_at &&
+    secs(stored.ended_at) === snap.ended_at &&
+    secs(stored.trial_end) === snap.trial_end &&
+    items.length === snap.items.length &&
+    snap.items.every((item, i) => {
+      const s = items[i];
+      return (
+        s !== undefined &&
+        s.id === item.id &&
+        s.price_id === item.price_id &&
+        s.product_id === item.product_id &&
+        s.quantity === item.quantity &&
+        s.current_period_start === item.current_period_start &&
+        s.current_period_end === item.current_period_end
+      );
+    })
+  );
 }
 
 // ---------------------------------------------------------------- small helpers

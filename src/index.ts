@@ -2,11 +2,15 @@
 export { processEvent, toSnapshot } from './core/process-event.js';
 export {
   reconcileCustomer,
+  reconcileRecent,
   reconcileSubscription,
   RECONCILE_EVENT_TYPE,
   type ReconcileCustomerOptions,
   type ReconcileCustomerResult,
   type ReconcileFailureReason,
+  type ReconcileRecentItem,
+  type ReconcileRecentOptions,
+  type ReconcileRecentResult,
   type ReconcileResult,
 } from './core/reconcile.js';
 export {

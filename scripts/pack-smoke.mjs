@@ -20,7 +20,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'DEFAULT_MAX_BODY_BYTES', 'IMPLEMENTED_EVENTS', 'MAX_CLAIM_TIMEOUT_SECONDS', 'MIN_CLAIM_TIMEOUT_SECONDS', 'MappingError',
   'MissingFieldError', 'ModeMismatchError', 'OwnerMismatchError', 'RECONCILE_EVENT_TYPE', 'StaleReadError', 'UnlinkedCustomerError',
   'createNextWebhookHandler', 'defaultUserResolver', 'exampleEntitlementPolicy', 'fromStripeSdk', 'getEntitlement',
-  'isStripeNotFound', 'isValidUserId', 'postgresStore', 'processEvent', 'reconcileCustomer', 'reconcileSubscription',
+  'isStripeNotFound', 'isValidUserId', 'postgresStore', 'processEvent', 'reconcileCustomer', 'reconcileRecent', 'reconcileSubscription',
   'redact', 'resolveEnabledEvents', 'resolveOptions', 'storeFromFunctions', 'supabaseStore', 'toSnapshot',
 ];
 const REQUIRED_FILES = ['package/dist/index.js', 'package/dist/index.d.ts', 'package/sql/schema.sql', 'package/sql/supabase.sql',
@@ -57,8 +57,8 @@ try {
   // 4. Types: a consumer using the main entry points typechecks against the shipped .d.ts.
   await writeFile(join(app, 'consumer.ts'), `
     import {
-      createNextWebhookHandler, fromStripeSdk, getEntitlement, postgresStore, reconcileCustomer, reconcileSubscription,
-      supabaseStore, type ReconcileResult, type SyncDeps, type SyncStore,
+      createNextWebhookHandler, fromStripeSdk, getEntitlement, postgresStore, reconcileCustomer, reconcileRecent, reconcileSubscription,
+      supabaseStore, type ReconcileRecentResult, type ReconcileResult, type SyncDeps, type SyncStore,
     } from 'stripe-subscription-sync';
     declare const pool: { query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> };
     declare const supabase: { rpc(fn: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: { message: string } | null }> };
@@ -69,6 +69,8 @@ try {
     export const viaSupabase: SyncStore = supabaseStore(supabase);
     export async function repair(): Promise<ReconcileResult['outcome']> {
       await reconcileCustomer('cus_1', deps, { maxSubscriptions: 10 });
+      const recent: ReconcileRecentResult = await reconcileRecent({ since: new Date(0), maxSubscriptions: 10 }, deps);
+      void recent.checked;
       await getEntitlement(store, 'user_1');
       return (await reconcileSubscription('sub_1', deps)).outcome;
     }

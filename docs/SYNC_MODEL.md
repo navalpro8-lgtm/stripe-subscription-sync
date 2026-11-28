@@ -36,6 +36,7 @@ Compare-and-swap prevents concurrent local workers from overwriting a subscripti
 - **Stale reads:** a reconcile read is as fresh as Stripe makes it, and no fresher. A stale reconcile read can overwrite a newer live state until the next event or run, exactly like a stale webhook read.
 - **Typed results:** `applied | tombstoned | failed`. A failure carries a reason: `not_found`, `unlinked_customer`, `owner_mismatch`, `mapping`, `mode_mismatch`, `retries_exhausted`, `claim_lost` or `error`. Expected failures are returned, not thrown. Database errors are thrown. A failed run records `failed` on its own row, and nothing retries it.
 - **`reconcileCustomer`:** lists one customer's subscriptions with `status: 'all'`, 100 per page, following `starting_after`. It stops at `maxSubscriptions` (default 1000) with `truncated: true`. There is no "reconcile everything" function, because enumerating a whole account is unbounded.
+- **`reconcileRecent`:** lists `customer.subscription.*` events created since `since` (100 per page, following `starting_after`), takes each subscription id once, and reconciles each on the same path, with one difference: after the Stripe read, if the stored row still has the revision read by `begin_subscription_read` and holds the same data, nothing is written (`unchanged`). Otherwise it calls `apply_subscription_snapshot` as usual. `reconcileSubscription` and webhooks always write. Stripe keeps events for about 30 days.
 
 ## What each event does
 

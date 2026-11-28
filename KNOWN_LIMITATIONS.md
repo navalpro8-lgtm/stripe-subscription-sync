@@ -4,7 +4,7 @@
 
 The module reacts to webhooks. If events are lost for good, a row can drift from Stripe, and nothing notices automatically. Stripe retries a failed delivery for up to three days in live mode, and three times over a few hours in a sandbox ([Stripe webhooks docs](https://docs.stripe.com/webhooks#automatic-retries)).
 
-`reconcileSubscription` and `reconcileCustomer` repair drift through the same compare-and-swap path, but only when you call them. There is no scheduled job, and no function that walks a whole Stripe account. [docs/RUNBOOK.md](docs/RUNBOOK.md) says when and how to run them, and [sql/health.sql](sql/health.sql) finds the events that need it.
+`reconcileSubscription`, `reconcileCustomer` and `reconcileRecent` repair drift through the same compare-and-swap path, but only when you call them. There is no scheduled job, and no function that walks a whole Stripe account. `reconcileRecent` only sees subscriptions with an event in Stripe's event history, which lasts about 30 days. The README section "Run reconcile on a schedule" shows one way to schedule it. [docs/RUNBOOK.md](docs/RUNBOOK.md) says when and how to run them, and [sql/health.sql](sql/health.sql) finds the events that need it.
 
 ## The entitlement policy is an example
 

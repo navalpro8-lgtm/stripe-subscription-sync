@@ -20,6 +20,12 @@ export class FakeStripe implements SubscriptionRetriever {
   listSubscriptionItems?: (subscriptionId: string, startingAfter: string) => Promise<unknown>;
   /** Set by pageCustomerSubscriptions(): the customer-subscription lister used by reconcileCustomer. */
   listCustomerSubscriptions?: (customerId: string, startingAfter?: string) => Promise<unknown>;
+  /** Set by pageEvents(): the subscription-event lister used by reconcileRecent. */
+  listSubscriptionEvents?: (since: number, startingAfter?: string) => Promise<unknown>;
+  /** Events served by pageEvents(), added with addEvent(). */
+  private readonly events: Array<{ id: string; type: string; created: number; data: { object: { id: string } } }> = [];
+  /** Every retrieve of these ids throws the given error. */
+  private readonly failing = new Map<string, unknown>();
   /** The next retrieve (of any id) throws this instead of reading. */
   failNextRetrieve?: unknown;
   /** Runs after the state is read and before the call returns (used to inject concurrent writes). */
@@ -57,6 +63,27 @@ export class FakeStripe implements SubscriptionRetriever {
     };
   }
 
+  /** Records a customer.subscription.* event for `subscriptionId`, created at `created` (unix seconds). */
+  addEvent(subscriptionId: string, created: number, type = 'customer.subscription.updated'): void {
+    this.events.push({ id: `evt_${this.events.length + 1}`, type, created, data: { object: { id: subscriptionId } } });
+  }
+
+  /** Lists added events created at or after `since`, newest first like Stripe, `pageSize` at a time. */
+  pageEvents(pageSize: number): void {
+    this.listSubscriptionEvents = async (since, startingAfter) => {
+      this.calls.push(`events:${since}:${startingAfter ?? ''}`);
+      const all = this.events.filter((e) => e.created >= since).sort((a, b) => b.created - a.created || b.id.localeCompare(a.id));
+      const start = startingAfter === undefined ? 0 : all.findIndex((e) => e.id === startingAfter) + 1;
+      if (startingAfter !== undefined && start === 0) throw new Error(`FakeStripe: unknown starting_after ${startingAfter}`);
+      return { object: 'list', data: structuredClone(all.slice(start, start + pageSize)), has_more: start + pageSize < all.length };
+    };
+  }
+
+  /** Every retrieve of `id` throws `err`. */
+  failRetrieve(id: string, err: unknown): void {
+    this.failing.set(id, err);
+  }
+
   /** The next retrieve of `id` returns `snapshot` instead of the current state: a stale read. */
   serveStale(snapshot: Record<string, unknown>): void {
     const id = String(snapshot.id);
@@ -81,6 +108,7 @@ export class FakeStripe implements SubscriptionRetriever {
       this.failNextRetrieve = undefined;
       throw err;
     }
+    if (this.failing.has(id)) throw this.failing.get(id);
     const stored = this.subscriptions.get(id);
     // Shaped like the Stripe SDK's StripeInvalidRequestError for a missing object.
     if (!stored) throw Object.assign(new Error(`No such subscription: '${id}'`), { statusCode: 404, code: 'resource_missing' });

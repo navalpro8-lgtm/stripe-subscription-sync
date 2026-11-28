@@ -16,3 +16,18 @@ test('stripe_adapter_without_subscription_items_has_no_pager', () => {
   const retriever = fromStripeSdk({ subscriptions: { retrieve: async (id: string) => ({ id }) } });
   expect(retriever.listSubscriptionItems).toBeUndefined();
 });
+
+test('stripe_adapter_lists_subscription_events_with_events_list', async () => {
+  const calls: unknown[] = [];
+  const retriever = fromStripeSdk({
+    subscriptions: { retrieve: async (id: string) => ({ id }) },
+    events: { list: async (params) => { calls.push(params); return { data: [], has_more: false }; } },
+  });
+  await retriever.listSubscriptionEvents?.(1_767_225_600);
+  await retriever.listSubscriptionEvents?.(1_767_225_600, 'evt_9');
+  expect(calls).toEqual([
+    { type: 'customer.subscription.*', created: { gte: 1_767_225_600 }, limit: 100 },
+    { type: 'customer.subscription.*', created: { gte: 1_767_225_600 }, limit: 100, starting_after: 'evt_9' },
+  ]);
+  expect(fromStripeSdk({ subscriptions: { retrieve: async (id: string) => ({ id }) } }).listSubscriptionEvents).toBeUndefined();
+});

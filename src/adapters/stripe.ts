@@ -11,11 +11,16 @@ export interface StripeSubscriptionsApi {
   subscriptionItems?: {
     list(params: { subscription: string; limit?: number; starting_after?: string }): Promise<unknown>;
   };
+  /** Used by reconcileRecent(). */
+  events?: {
+    list(params: { type?: string; created?: { gte?: number }; limit?: number; starting_after?: string }): Promise<unknown>;
+  };
 }
 
 export function fromStripeSdk(stripe: StripeSubscriptionsApi): SubscriptionRetriever {
   const items = stripe.subscriptionItems;
   const subs = stripe.subscriptions;
+  const events = stripe.events;
   return {
     retrieveSubscription: (id) => subs.retrieve(id),
     ...(subs.list && {
@@ -25,6 +30,10 @@ export function fromStripeSdk(stripe: StripeSubscriptionsApi): SubscriptionRetri
     ...(items && {
       listSubscriptionItems: (subscription: string, startingAfter: string) =>
         items.list({ subscription, limit: 100, starting_after: startingAfter }),
+    }),
+    ...(events && {
+      listSubscriptionEvents: (since: number, startingAfter?: string) =>
+        events.list({ type: 'customer.subscription.*', created: { gte: since }, limit: 100, ...(startingAfter && { starting_after: startingAfter }) }),
     }),
   };
 }
