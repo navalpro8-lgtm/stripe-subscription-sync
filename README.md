@@ -2,6 +2,8 @@
 
 A small module that keeps a database copy of Stripe subscription state correct when webhooks arrive duplicated, out of order, concurrently, or while a worker crashes. It comes with plain-Postgres SQL, Supabase RLS/grants, thin adapters (Next.js route, Supabase RPC, Postgres query), and a minimal [Next.js + Supabase example](examples/nextjs-supabase).
 
+Each row has a revision number, and a write only succeeds if the revision is unchanged since it was read (see the concurrent-handler test [`overlapping_fetches_never_overwrite_a_newer_committed_write`](tests/concurrency.test.ts#L93)).
+
 It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)). MIT licensed ([LICENSE](LICENSE)); changes are listed in [CHANGELOG.md](CHANGELOG.md), and [CONTRIBUTING.md](CONTRIBUTING.md) says how to propose one.
 
 **Status:** v0.2.0, 147 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
