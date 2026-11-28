@@ -240,6 +240,69 @@ export async function GET(req: Request) {
 
 This example typechecks against the example app. It has not been run on Vercel or against real Stripe.
 
+### Without Vercel (Node script + GitHub Actions or cron)
+
+If you are not on Vercel, call `reconcileRecent` directly from a small Node script using `postgresStore` and run it from system `cron` or a scheduled GitHub Actions workflow.
+
+`scripts/reconcile-recent.ts`:
+
+```ts
+import { Pool } from 'pg';
+import Stripe from 'stripe';
+import { fromStripeSdk, postgresStore, reconcileRecent } from 'stripe-subscription-sync';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+try {
+  const result = await reconcileRecent(
+    { since: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    {
+      livemode: process.env.STRIPE_LIVEMODE === 'true',
+      store: postgresStore(pool),
+      stripe: fromStripeSdk(stripe),
+      logger: console,
+    },
+  );
+  console.log({
+    checked: result.checked,
+    updated: result.updated,
+    unchanged: result.unchanged,
+    failed: result.failed,
+    truncated: result.truncated,
+  });
+  if (result.failed > 0) process.exitCode = 1;
+} finally {
+  await pool.end();
+}
+```
+
+`.github/workflows/reconcile.yml`:
+
+```yaml
+name: reconcile-stripe-subscriptions
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci && npx tsx scripts/reconcile-recent.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_LIVEMODE: ${{ vars.STRIPE_LIVEMODE }}
+```
+
+This example was typechecked locally against the package exports (`tsc --noEmit`); it has not been run in GitHub Actions or against real Stripe.
+
 ## Guarantees, and the test for each
 
 Every test except the policy unit tests asserts database state, against a real Postgres.
