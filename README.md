@@ -238,7 +238,7 @@ export async function GET(req: Request) {
 { "crons": [{ "path": "/api/cron/reconcile", "schedule": "0 * * * *" }] }
 ```
 
-This example typechecks against the example app. It has not been run on Vercel or against real Stripe.
+This example typechecks against the example app. The `reconcileRecent` call inside it has been run against real Stripe test mode (see [Run against real Stripe](#run-against-real-stripe) below). The Vercel Cron route itself has not been deployed and triggered by Vercel Cron yet.
 
 ### Without Vercel (Node script + GitHub Actions or cron)
 
@@ -301,7 +301,17 @@ jobs:
           STRIPE_LIVEMODE: ${{ vars.STRIPE_LIVEMODE }}
 ```
 
-This example was typechecked locally against the package exports (`tsc --noEmit`); it has not been run in GitHub Actions or against real Stripe.
+This script was run as written against real Stripe test mode on 28 Nov 2026: installed from the packed package (`npm pack`), with `npx tsx`, against a Postgres with the shipped schema. Result: `{ checked: 1, updated: 1, unchanged: 0, failed: 0, truncated: false }`, exit code 0. The GitHub Actions workflow around it has not been run.
+
+### Run against real Stripe
+
+`scripts/e2e-real-stripe.mjs` checks `reconcileRecent` end to end against your Stripe **test** account and an embedded Postgres. It creates a subscription, then checks the database row after a first reconcile, a reconcile with nothing changed (no write), a price change, cancel at period end, and cancel. It cancels the subscription and archives the product when it finishes, and refuses to run with a live key.
+
+```sh
+npm ci && npm run build && STRIPE_SECRET_KEY=sk_test_... node scripts/e2e-real-stripe.mjs
+```
+
+First run, 28 Nov 2026, in a Vercel Sandbox (Node 24): all 12 checks passed.
 
 ## Guarantees, and the test for each
 

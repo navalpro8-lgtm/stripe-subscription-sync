@@ -16,6 +16,7 @@ Not released; the version is still 0.2.0.
 - KNOWN_LIMITATIONS: one Stripe fetch per event can hit Stripe rate limits during a bulk change; a merging queue is noted as a possible future change, not built. Pinned by a test (50 events, 50 fetches).
 - README: one sentence on the revision guard near the top (feedback from Faizan, X).
 - docs/WHY_NOT_A_LOCK.md: the tradeoff between compare-and-swap and a lock, with the measured numbers.
+- scripts/e2e-real-stripe.mjs: an end-to-end check of `reconcileRecent` against real Stripe test mode (create, no-op, price change, cancel at period end, cancel). First run passed all 12 checks. The README's non-Vercel reconcile script was also run as written against real Stripe test mode. Issue #2.
 - docs/LOAD_TEST.md and docs/WHY_NOT_A_LOCK.md: three more lock variants (a small waiter pool, a `lock_timeout`, a plain try-lock with an immediate 503) measured by Sunnatulla (dev.to) on his own setup, in response to issue #3.
 
 ## 0.2.0 (2026-11-27)

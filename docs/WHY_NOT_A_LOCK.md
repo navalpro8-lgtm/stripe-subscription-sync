@@ -18,7 +18,7 @@ What compare-and-swap does better:
 - It works through the Supabase RPC adapter. Each RPC call is a separate request, so a session lock cannot be held from before the fetch to after the write.
 - A worker that hangs in the Stripe call blocks nobody. With the lock, every other event for that subscription waits for it.
 
-What compare-and-swap costs: under heavy contention on one subscription, many events fail with a 500 and are applied only when Stripe redelivers them. The row still ends at Stripe's state, but it can lag until then.
+What compare-and-swap costs: under heavy contention on one subscription, many events fail with a 500 and are applied only when Stripe redelivers them. The row still ends at Stripe's state, but it can lag until then. In live mode Stripe retries a failed delivery with exponential backoff for up to 3 days, so that lag can be minutes or hours, not the instant retry a load test shows (point from Sunnatulla, dev.to). The same applies to the try-lock-and-503 variant below. A scheduled `reconcileRecent` run (README, "Run reconcile on a schedule") shortens it.
 
 Sunnatulla (dev.to) since measured three variants meant to starve less: a small separate pool for lock waiters, a `lock_timeout`, and a plain try-lock that rejects immediately instead of waiting. None removed the tradeoff, they just moved it: the pool traded failures for a long tail of latency on cold subscriptions, the timeout held a connection the whole time it counted down and made things worse, and the plain try-lock matched cas on cold subscriptions but only holds up if Stripe's own redelivery backoff is standing in for a retry queue. Numbers and detail in [LOAD_TEST.md](LOAD_TEST.md).
 
