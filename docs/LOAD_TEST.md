@@ -43,4 +43,16 @@ Windows 11 laptop, Node 26.13.1, embedded Postgres 17, 2026-11-28. Two runs; the
 - **With cas, the cost stays on the hot subscription.** About 57% of its events failed and rely on Stripe's redelivery. The other subscriptions were barely affected.
 - 100 events at once for one subscription is far more than real subscriptions usually see (bursts of 2 to 5).
 
+## Sunnatulla's follow-up: three lock variants that starve less
+
+The "not tried" gap above (issue [#3](https://github.com/navalpro8-lgtm/stripe-subscription-sync/issues/3)) asked whether a lock variant could avoid starving the other 50 subscriptions. Sunnatulla measured three on his own setup and posted the results on dev.to. These are his numbers, from his own machine and harness, not a run of this repo's bench script — recorded here with his permission so the comparison stays in one place.
+
+Same scenario D shape (one hot subscription hit hard, 50 others getting normal traffic, a bounded pool):
+
+- **Waiter pool of 3 (a small separate pool for lock waiters, behind a try-lock):** the other 50 subscriptions kept writing — 503 writes instead of collapsing to ~100 — with a p50 latency of 55 ms. But p99 hit 5 s, because a cold event unlucky enough to land behind the hot subscription's waiters in that small pool queues behind them.
+- **`lock_timeout` of 200 ms:** worse than the pool, not better. Cold writes fell further, to 216. The waiter still holds a main-pool connection for the full 200 ms while it counts down before giving up, so it adds pure overhead with no payoff.
+- **Plain try-lock, immediate 503 if busy (no waiting at all):** cold subscriptions matched cas — 2,860 writes, 0 stale rows. But the hot subscription was rejected (503) about 71,000 times. This only works as a real strategy if Stripe's own redelivery backoff is doing the job of a retry queue; otherwise it is just moving the 500-vs-503 problem around.
+
+What this adds to the picture: a separate waiter pool or a timeout both still cost something, just distributed differently (latency instead of outright failures, or wasted held connections). The plain try-lock is the one that actually matches cas on the subscriptions that aren't hot, with the same honest caveat cas has — the hot subscription's cost depends on Stripe retrying for you.
+
 The design choice and its tradeoffs: [WHY_NOT_A_LOCK.md](WHY_NOT_A_LOCK.md).
