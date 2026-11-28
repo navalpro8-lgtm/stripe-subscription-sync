@@ -2,6 +2,21 @@
 
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/); before 1.0.0, a minor version may contain breaking changes.
 
+## Unreleased
+
+Not released; the version is still 0.2.0.
+
+**Added**
+
+- **`reconcileRecent({ since }, deps)`.** Lists Stripe's `customer.subscription.*` events created since a time (paged), reconciles each subscription once, and returns `checked`, `updated`, `unchanged` and `failed` counts. A row that already matches Stripe is not rewritten. Needs `events.list` on the Stripe client; `fromStripeSdk` maps it. Stripe keeps events about 30 days. Nothing schedules it; the README shows a Vercel Cron example. Feedback from Arthur (dev.to).
+- **Load test scenario D.** A hot subscription and 50 others at once, as shipped and with an advisory lock that exists only in the bench script. Results in docs/LOAD_TEST.md; the comparison idea is from Sunnatulla (dev.to).
+
+**Docs**
+
+- KNOWN_LIMITATIONS: one Stripe fetch per event can hit Stripe rate limits during a bulk change; a merging queue is noted as a possible future change, not built. Pinned by a test (50 events, 50 fetches).
+- README: one sentence on the revision guard near the top (feedback from Faizan, X).
+- docs/WHY_NOT_A_LOCK.md: the tradeoff between compare-and-swap and a lock, with the measured numbers.
+
 ## 0.2.0 (2026-11-27)
 
 Prepared for independent evaluation. Upgrade steps: [docs/UPGRADING.md](docs/UPGRADING.md).

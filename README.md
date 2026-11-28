@@ -6,7 +6,7 @@ Each row has a revision number, and a write only succeeds if the revision is unc
 
 It is meant to be read, copied into your project, and adapted. It is a reference implementation, not an audited library ([SECURITY.md](SECURITY.md)). MIT licensed ([LICENSE](LICENSE)); changes are listed in [CHANGELOG.md](CHANGELOG.md), and [CONTRIBUTING.md](CONTRIBUTING.md) says how to propose one.
 
-**Status:** v0.2.0, 147 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+**Status:** v0.2.0 plus unreleased changes (see [CHANGELOG.md](CHANGELOG.md)), 163 tests, not audited. Please do not use it with live payment data before you have read [SECURITY.md](SECURITY.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Who this is for
 
@@ -22,7 +22,7 @@ You need Node 22.12 or newer. You do not need Docker or a Stripe account: the te
 git clone https://github.com/navalpro8-lgtm/stripe-subscription-sync
 cd stripe-subscription-sync
 npm ci
-npm run check        # lint, typecheck, 147 tests, build
+npm run check        # lint, typecheck, 163 tests, build
 ```
 
 To watch two of the bad cases on their own:
@@ -394,7 +394,7 @@ The run went through these steps:
 
 ## Size
 
-`src/` is 1,186 lines: `process-event.ts` 351, `types.ts` 193, `reconcile.ts` 141, the rest under 100 each. `sql/schema.sql` is 288 lines.
+`src/` is 1,377 lines: `process-event.ts` 429, `reconcile.ts` 223, `types.ts` 202, the rest under 100 each. `sql/schema.sql` is 288 lines.
 
 ## Docs
 
