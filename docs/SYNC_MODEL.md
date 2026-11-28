@@ -26,6 +26,8 @@ Stripe is the source of truth. An event only says *which* subscription to look a
 
 Compare-and-swap prevents concurrent local workers from overwriting a subscription snapshot without noticing an intervening database write; it does not guarantee that Stripe API reads are globally linearizable or always reflect the newest possible state.
 
+Why this and not a per-subscription lock, with measured numbers: [WHY_NOT_A_LOCK.md](WHY_NOT_A_LOCK.md).
+
 ## Reconciliation
 
 `reconcileSubscription(id, deps)` and `reconcileCustomer(customerId, deps)` are library functions. Nothing schedules them.

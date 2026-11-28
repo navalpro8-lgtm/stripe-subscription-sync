@@ -42,3 +42,5 @@ Windows 11 laptop, Node 26.13.1, embedded Postgres 17, 2026-11-28. Two runs; the
 - **The lock starved everything else.** Each waiter held a pool connection while it waited, so the 20 connections were taken by `sub_hot` waiters. The other 50 subscriptions got 100 writes instead of about 5,100. That is one finished request per connection, plus the one still waiting when the load stopped, which finished during the drain. In run 1 their median latency went from 72 ms (cas) to 6.4 s (lock).
 - **With cas, the cost stays on the hot subscription.** About 57% of its events failed and rely on Stripe's redelivery. The other subscriptions were barely affected.
 - 100 events at once for one subscription is far more than real subscriptions usually see (bursts of 2 to 5).
+
+The design choice and its tradeoffs: [WHY_NOT_A_LOCK.md](WHY_NOT_A_LOCK.md).
